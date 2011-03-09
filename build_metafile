@@ -60,6 +60,17 @@ sub wanted {
 
   my ( $device, $inode, $mode, $nlink, $uid, $gid ) = stat( $File::Find::name );
 
+  if ( ! $device || $device != $File::Find::topdev ) {
+
+#    warn "$name is a broken symlink (or something else that produces null data for a stat), ignoring\n"
+#      if ! $device;
+
+    $File::Find::prune = 1;
+
+    return;
+        
+  }
+
   if ( $nlink > 1 ) {
 
     my $meta = sprintf "%d\0%d\0%d", $uid, $gid, $mode;
@@ -71,16 +82,6 @@ sub wanted {
     push @{ $inode{ $inode }{ 'names' } }, $name;
     return;
 
-  }
-
-#  warn "$File::Find::name has no dev\n" if ! $device;
-
-  # Don't traverse filesystems
-  if ( ! $device || $device != $File::Find::topdev ) {
-
-    $File::Find::prune = 1;
-    return;
-        
   }
 
   my $link = S_ISLNK( $mode ) ? do { readlink $mode } : '';

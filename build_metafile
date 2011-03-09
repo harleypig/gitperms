@@ -1,0 +1,90 @@
+#! /usr/bin/perl
+
+eval 'exec /usr/bin/perl -S $0 ${1+"$@"}'
+  if 0; #$running_under_some_shell
+
+use strict;
+use warnings;
+#no warnings 'File::Find';
+
+use Data::Dumper ();
+use Fcntl ':mode';
+use File::Find ();
+use IPC::Run3::Simple;
+
+IPC::Run3::Simple::croak_on_err( 1 );
+IPC::Run3::Simple::chomp_out( 1 );
+IPC::Run3::Simple::default_stderr( \my $err );
+
+run3({ 'cmd' => [qw( git rev-parse --show-toplevel )], 'stdout' => \my $base_dir });
+
+chdir $base_dir
+  or die "Unable to change to git top level directory: $!\n";
+
+run3({ 'cmd' => [qw( git ls-files )], 'stdout' => \my @git_files });
+my %git_file; @git_file{ @git_files } = undef;
+
+my $metafile = shift
+  or die "Expecting file to save metadata to.\n";
+
+open my $METAFILE, '>', $metafile
+  or die "Unable to open $metafile for writing: $!\n";
+
+my %inode;
+
+File::Find::find({
+
+  'wanted'   => \&wanted,
+  'no_chdir' => 1
+
+}, $base_dir );
+
+for my $inode ( keys %inode ) {
+
+  my $meta  = $inode{ $inode }{ 'meta' };
+  my $names = join "\0", @{ $inode{ $inode }{ 'names' } };
+  printf $METAFILE "HL: %s\0%s\n", $meta, $names;
+
+}
+
+exit 0;
+
+
+sub wanted {
+
+  return if $File::Find::name eq $base_dir;
+
+  ( my $name = $File::Find::name ) =~ s{^$base_dir/}{};
+
+  return unless exists $git_file{ $name };
+
+  my ( $device, $inode, $mode, $nlink, $uid, $gid ) = stat( $File::Find::name );
+
+  if ( $nlink > 1 ) {
+
+    my $meta = sprintf "%d\0%d\0%d", $uid, $gid, $mode;
+
+    ( die sprintf "This shouldn't happen! $name is a hardlink and has different meta data ($meta) than %s\n", Data::Dumper::Dumper $inode{ $inode } )
+      if exists $inode{ $inode } && $meta ne $inode{ $inode }{ 'meta' };
+
+    $inode{ $inode }{ 'meta' } = $meta;
+    push @{ $inode{ $inode }{ 'names' } }, $name;
+    return;
+
+  }
+
+#  warn "$File::Find::name has no dev\n" if ! $device;
+
+  # Don't traverse filesystems
+  if ( ! $device || $device != $File::Find::topdev ) {
+
+    $File::Find::prune = 1;
+    return;
+        
+  }
+
+  my $link = S_ISLNK( $mode ) ? do { readlink $mode } : '';
+
+  printf $METAFILE "%d\0%d\0%d\0%s\0%s\n", $uid, $gid, $mode, $name, $link;
+
+}

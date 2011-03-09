@@ -1,0 +1,82 @@
+#!/usr/bin/perl -w
+
+# This file is expecting to be run from a git hook (at the moment, either
+# post-checkout or post-merge).
+
+use Carp;
+use IPC::Run3::Simple;
+use Text::Diff;
+
+IPC::Run3::Simple::chomp_out( 1 );
+IPC::Run3::Simple::default_stderr( \my $err );
+
+run3({ 'cmd' => [qw( git rev-parse --show-toplevel )], 'stdout' => \my $base_dir });
+
+chdir $base_dir
+  or die "Unable to change to git top level directory: $!\n";
+
+my $git_version = shift;
+
+die "Git version of metadata file does not exist\n"
+  unless -e $git_version;
+
+my $validate_file = '.validate_metafile';
+
+run3( [ '.git/hooks/build_metafile', $validate_file ] );
+
+die "$validate_file was not created"
+  unless -e $validate_file;
+
+my @diff = split /\n/, diff $validate_file, $git_version, { 'CONTEXT' => 0 };
+
+croak "Incorrect order in diff ($validate_file should be first) or something else is wrong\n"
+  unless ( shift @diff ) =~ /--- $validate_file/;
+
+croak "Incorrect order in diff ($git_version should be second) or something else is wrong\n"
+  unless ( shift @diff ) =~ /\+\+\+ $git_version/;
+
+for my $fix ( @diff ) {
+
+  next unless $fix =~ s/^\+//;
+
+  my ( $uid, $gid, $mode, $name, $link ) = split /\0/, $fix, 5;
+
+  if ( ! -e $name ) {
+
+    warn "$name does not exist, skipping\n";
+    next;
+
+  }
+
+  if ( $uid =~ s/^HL: // ) {
+
+    my @links = split /\0/, $link;
+
+    my $links = join ' ', @links;
+
+    warn "Deleting $links\n";
+    my $removed = unlink @links;
+    warn "Unable to remove all files.\n"
+      if $removed != @links;
+
+    warn "Hardlinking $links to $name\n";
+    link $name, $_ for @links;
+
+  }
+
+  $mode = sprintf '%04o', $mode & 07777;
+
+  warn "Setting owner, group and mode for $name\n";
+
+  my $chowned = chown $uid, $gid, $name;
+  warn "Unable to change owner and/or group for $name: $!\n"
+    unless $chowned == 1;
+
+  my $chmodded = chmod oct($mode), $name;
+  warn "Unable to change mode for $name: $!\n"
+    unless $chmodded;
+
+}
+
+unlink $validate_file
+  or warn "Unable to remove $validate_file: $!\n";

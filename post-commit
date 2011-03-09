@@ -1,0 +1,13 @@
+#!/bin/bash
+
+# Add calls to specific programs you wish to run in this hook ... don't add
+# actual code handling here.
+
+OLDPWD=$PWD
+
+cd $(git rev-parse --show-toplevel)
+.git/hooks/build_metafile .metafile
+git add .metafile
+git commit -m 'automatic commit for .metafile' .metafile
+
+exit 0

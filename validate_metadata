@@ -15,7 +15,8 @@ run3({ 'cmd' => [qw( git rev-parse --show-toplevel )], 'stdout' => \my $base_dir
 chdir $base_dir
   or die "Unable to change to git top level directory: $!\n";
 
-my $git_version = shift;
+my $git_version = shift
+  or die "Expecting a file to validate.\n";
 
 die "Git version of metadata file does not exist\n"
   unless -e $git_version;
@@ -28,6 +29,13 @@ die "$validate_file was not created"
   unless -e $validate_file;
 
 my @diff = split /\n/, diff $validate_file, $git_version, { 'CONTEXT' => 0 };
+
+if ( @diff == 0 ) {
+
+  warn "Everything checks out, nothing to do.\n";
+  exit 0;
+
+}
 
 croak "Incorrect order in diff ($validate_file should be first) or something else is wrong\n"
   unless ( shift @diff ) =~ /--- $validate_file/;

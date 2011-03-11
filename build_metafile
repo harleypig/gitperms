@@ -58,15 +58,11 @@ sub wanted {
 
   return unless exists $git_file{ $name };
 
-  my ( $device, $inode, $mode, $nlink, $uid, $gid ) = stat( $File::Find::name );
+  my ( $device, $inode, $mode, $nlink, $uid, $gid ) = lstat( $File::Find::name );
 
   if ( ! $device || $device != $File::Find::topdev ) {
 
-#    warn "$name is a broken symlink (or something else that produces null data for a stat), ignoring\n"
-#      if ! $device;
-
     $File::Find::prune = 1;
-
     return;
         
   }
@@ -84,8 +80,6 @@ sub wanted {
 
   }
 
-  my $link = S_ISLNK( $mode ) ? do { readlink $mode } : '';
-
-  printf $METAFILE "%d\0%d\0%d\0%s\0%s\n", $uid, $gid, $mode, $name, $link;
+  printf $METAFILE "%d\0%d\0%d\0%s\n", $uid, $gid, $mode, $name;
 
 }

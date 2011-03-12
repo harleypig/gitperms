@@ -6,7 +6,7 @@
 use Carp;
 use IPC::Run3::Simple;
 use Text::Diff;
-use Unix::Mknod;
+use Unix::Mknod ':all';
 
 IPC::Run3::Simple::chomp_out( 1 );
 IPC::Run3::Simple::default_stderr( \my $err );
@@ -48,18 +48,11 @@ for my $fix ( @diff ) {
 
   next unless $fix =~ s/^\+//;
 
-  my ( $uid, $gid, $mode, $name ) = split /\0/, $fix, 4;
+  if ( $fix =~ s/^HL: // ) {
 
-  if ( ! -e $name ) {
+    my ( $uid, $gid, $mode, $name, @links ) = split /\0/, $fix;
 
-    warn "$name does not exist, skipping\n";
-    next;
-
-  }
-
-  if ( $uid =~ s/^HL: // ) {
-
-    ( $name, my @links ) = split /\0/, $name;
+    # XXX: Check for non-existant files.
 
     if ( @links > 0 ) {
 
@@ -75,26 +68,55 @@ for my $fix ( @diff ) {
 
     }
 
-  }
+    chmod_file( $name, $mode );
+    chown_file( $name, $uid, $gid );
 
-  if ( $uid =~ s/^CF: // ) {
+  } elsif ( $fix =~ s/^CF: // ) {
 
-    ( $name, my $rdev ) = split /\0/, $name;
+    my ( $uid, $gid, $mode, $rdev, $name ) = split /\0/, $fix;
 
-    ( mknod( $name, $mode, $rdev ) == -1 ) && do {
-      warn "Problem making special file $name ($!), skipping.\n";
-      next;
-    };
+    ( mknod( $name, $mode, $rdev ) == -1 ) &&
+      warn "Problem making special file $name: $!\n";
+
+    chown_file( $name, $uid, $gid );
 
   } else {
 
-    $mode = sprintf '%04o', $mode & 07777;
+    my ( $uid, $gid, $mode, $name ) = split /\0/, $fix;
 
-    my $chmodded = chmod oct($mode), $name;
-    warn "Unable to change mode for $name: $!\n"
-      unless $chmodded;
+    if ( -e $name ) {
 
+      chmod_file( $name, $mode );
+      chown_file( $name, $uid, $gid );
+
+    } else {
+
+      warn "$name does not exist, skipping.\n";
+      next;
+
+    }
   }
+}
+
+unlink $validate_file
+  or warn "Unable to remove $validate_file: $!\n";
+
+
+sub chmod_file {
+
+  my ( $name, $mode ) = @_;
+
+  $mode = sprintf '%04o', $mode & 07777;
+
+  my $chmodded = chmod oct($mode), $name;
+  warn "Unable to change mode for $name: $!\n"
+    unless $chmodded;
+
+}
+
+sub chown_file {
+
+  my ( $name, $uid, $gid ) = @_;
 
   warn "Setting owner, group and mode for $name\n";
 
@@ -103,6 +125,3 @@ for my $fix ( @diff ) {
     unless $chowned == 1;
 
 }
-
-unlink $validate_file
-  or warn "Unable to remove $validate_file: $!\n";

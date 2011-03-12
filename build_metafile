@@ -10,6 +10,7 @@ use warnings;
 use Data::Dumper ();
 use Fcntl ':mode';
 use File::Find ();
+use File::stat ':FIELDS';
 use IPC::Run3::Simple;
 
 IPC::Run3::Simple::croak_on_err( 1 );
@@ -30,14 +31,17 @@ my $metafile = shift
 open my $METAFILE, '>', $metafile
   or die "Unable to open $metafile for writing: $!\n";
 
-my %inode;
+my ( %inode, @rdev );
 
 File::Find::find({
 
   'wanted'   => \&wanted,
-  'no_chdir' => 1
+  'no_chdir' => 1,
 
 }, $base_dir );
+
+print $METAFILE $_
+  for @rdev;
 
 for my $inode ( keys %inode ) {
 
@@ -49,37 +53,47 @@ for my $inode ( keys %inode ) {
 
 exit 0;
 
-
 sub wanted {
 
   return if $File::Find::name eq $base_dir;
 
-  ( my $name = $File::Find::name ) =~ s{^$base_dir/}{};
+  lstat( $File::Find::name ) or do {
+    warn "Problem getting stat on $File::Find::name, skipping.\n";
+    return;
+  };
 
-  return unless exists $git_file{ $name };
-
-  my ( $device, $inode, $mode, $nlink, $uid, $gid ) = lstat( $File::Find::name );
-
-  if ( ! $device || $device != $File::Find::topdev ) {
+  if ( ! $st_dev || $st_dev != $File::Find::topdev ) {
 
     $File::Find::prune = 1;
     return;
         
   }
 
-  if ( $nlink > 1 ) {
+  ( my $name = $File::Find::name ) =~ s{^$base_dir/}{};
 
-    my $meta = sprintf "%d\0%d\0%d", $uid, $gid, $mode;
+  if ( $st_rdev ) {
 
-    ( die sprintf "This shouldn't happen! $name is a hardlink and has different meta data ($meta) than %s\n", Data::Dumper::Dumper $inode{ $inode } )
-      if exists $inode{ $inode } && $meta ne $inode{ $inode }{ 'meta' };
-
-    $inode{ $inode }{ 'meta' } = $meta;
-    push @{ $inode{ $inode }{ 'names' } }, $name;
+    my $meta = sprintf "CF: %d\0%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $st_rdev, $name;
+    push @rdev, $meta;
     return;
 
   }
 
-  printf $METAFILE "%d\0%d\0%d\0%s\n", $uid, $gid, $mode, $name;
+  return unless exists $git_file{ $name };
+
+  if ( $st_nlink > 1 ) {
+
+    my $meta = sprintf "%d\0%d\0%d", $st_uid, $st_gid, $st_mode;
+
+    ( die sprintf "This shouldn't happen! $name is a hardlink and has different meta data ($meta) than %s\n", Data::Dumper::Dumper $inode{ $st_ino } )
+      if exists $inode{ $st_ino } && $meta ne $inode{ $st_ino }{ 'meta' };
+
+    $inode{ $st_ino }{ 'meta' } = $meta;
+    push @{ $inode{ $st_ino }{ 'names' } }, $name;
+    return;
+
+  }
+
+  printf $METAFILE "%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $name;
 
 }

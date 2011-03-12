@@ -6,6 +6,7 @@
 use Carp;
 use IPC::Run3::Simple;
 use Text::Diff;
+use Unix::Mknod;
 
 IPC::Run3::Simple::chomp_out( 1 );
 IPC::Run3::Simple::default_stderr( \my $err );
@@ -47,7 +48,7 @@ for my $fix ( @diff ) {
 
   next unless $fix =~ s/^\+//;
 
-  my ( $uid, $gid, $mode, $name, $link ) = split /\0/, $fix, 5;
+  my ( $uid, $gid, $mode, $name ) = split /\0/, $fix, 4;
 
   if ( ! -e $name ) {
 
@@ -58,31 +59,48 @@ for my $fix ( @diff ) {
 
   if ( $uid =~ s/^HL: // ) {
 
-    my @links = split /\0/, $link;
+    ( $name, my @links ) = split /\0/, $name;
 
-    my $links = join ' ', @links;
+    if ( @links > 0 ) {
 
-    warn "Deleting $links\n";
-    my $removed = unlink @links;
-    warn "Unable to remove all files.\n"
-      if $removed != @links;
+      my $links = join ' ', @links;
 
-    warn "Hardlinking $links to $name\n";
-    link $name, $_ for @links;
+      warn "Deleting $links\n";
+      my $removed = unlink @links;
+      warn "Unable to remove all files.\n"
+        if $removed != @links;
+
+      warn "Hardlinking $links to $name\n";
+      link $name, $_ for @links;
+
+    }
 
   }
 
-  $mode = sprintf '%04o', $mode & 07777;
+  if ( $uid =~ s/^CF: // ) {
+
+    ( $name, my $rdev ) = split /\0/, $name;
+
+    ( mknod( $name, $mode, $rdev ) == -1 ) && do {
+      warn "Problem making special file $name ($!), skipping.\n";
+      next;
+    };
+
+  } else {
+
+    $mode = sprintf '%04o', $mode & 07777;
+
+    my $chmodded = chmod oct($mode), $name;
+    warn "Unable to change mode for $name: $!\n"
+      unless $chmodded;
+
+  }
 
   warn "Setting owner, group and mode for $name\n";
 
   my $chowned = chown $uid, $gid, $name;
   warn "Unable to change owner and/or group for $name: $!\n"
     unless $chowned == 1;
-
-  my $chmodded = chmod oct($mode), $name;
-  warn "Unable to change mode for $name: $!\n"
-    unless $chmodded;
 
 }
 

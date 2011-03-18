@@ -107,11 +107,9 @@ sub chmod_file {
 
   my ( $name, $mode ) = @_;
 
-  $mode = sprintf '%04o', $mode & 07777;
+  warn sprintf "chmod %04o, $name\n", $mode & 07777;
 
-  warn "chmod $mode, $name\n";
-
-  my $chmodded = chmod $mode, $name;
+  my $chmodded = chmod +( $mode & 07777 ), $name;
   warn "Unable to change mode for $name: $!\n"
     unless $chmodded;
 

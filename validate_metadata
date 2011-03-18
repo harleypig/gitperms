@@ -107,7 +107,7 @@ sub chmod_file {
 
   my ( $name, $mode ) = @_;
 
-  $mode = oct( sprintf '%04o', $mode & 07777 );
+  $mode = sprintf '%04o', $mode & 07777;
 
   warn "chmod $mode, $name\n";
 

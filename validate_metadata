@@ -6,7 +6,8 @@
 use Carp;
 use IPC::Run3::Simple;
 use Text::Diff;
-use Unix::Mknod ':all';
+#use Unix::Mknod ':all';
+use Unix::Mknod;
 
 IPC::Run3::Simple::chomp_out( 1 );
 IPC::Run3::Simple::default_stderr( \my $err );
@@ -75,7 +76,7 @@ for my $fix ( @diff ) {
 
     my ( $uid, $gid, $mode, $rdev, $name ) = split /\0/, $fix;
 
-    ( mknod( $name, $mode, $rdev ) == -1 ) &&
+    ( Unix::Mknode::mknod( $name, $mode, $rdev ) == -1 ) &&
       warn "Problem making special file $name: $!\n";
 
     chown_file( $name, $uid, $gid );
@@ -106,9 +107,9 @@ sub chmod_file {
 
   my ( $name, $mode ) = @_;
 
-  $mode = sprintf '%04o', $mode & 07777;
+  $mode = oct( sprintf '%04o', $mode & 07777 );
 
-  my $chmodded = chmod oct($mode), $name;
+  my $chmodded = chmod $mode, $name;
   warn "Unable to change mode for $name: $!\n"
     unless $chmodded;
 

@@ -1,7 +1,6 @@
 #! /usr/bin/perl
 
-eval 'exec /usr/bin/perl -S $0 ${1+"$@"}'
-  if 0; #$running_under_some_shell
+eval 'exec /usr/bin/perl -S $0 ${1+"$@"}' if 0;
 
 use strict;
 use warnings;
@@ -58,7 +57,7 @@ sub wanted {
   return if $File::Find::name eq $base_dir;
 
   lstat( $File::Find::name ) or do {
-    warn "Problem getting stat on $File::Find::name, skipping.\n";
+    warn "Problem getting stat on $File::Find::name ($!), skipping.\n";
     return;
   };
 

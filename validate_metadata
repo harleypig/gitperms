@@ -76,7 +76,7 @@ for my $fix ( @diff ) {
 
     my ( $uid, $gid, $mode, $rdev, $name ) = split /\0/, $fix;
 
-    ( Unix::Mknode::mknod( $name, $mode, $rdev ) == -1 ) &&
+    ( Unix::Mknod::mknod( $name, $mode, $rdev ) == -1 ) &&
       warn "Problem making special file $name: $!\n";
 
     chown_file( $name, $uid, $gid );
@@ -109,6 +109,8 @@ sub chmod_file {
 
   $mode = oct( sprintf '%04o', $mode & 07777 );
 
+  warn "chmod $mode, $name\n";
+
   my $chmodded = chmod $mode, $name;
   warn "Unable to change mode for $name: $!\n"
     unless $chmodded;
@@ -119,7 +121,7 @@ sub chown_file {
 
   my ( $name, $uid, $gid ) = @_;
 
-  warn "Setting owner, group and mode for $name\n";
+  warn "chown $uid, $gid, $name\n";
 
   my $chowned = chown $uid, $gid, $name;
   warn "Unable to change owner and/or group for $name: $!\n"

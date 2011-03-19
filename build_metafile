@@ -34,8 +34,9 @@ my ( %inode, @rdev );
 
 File::Find::find({
 
-  'wanted'   => \&wanted,
-  'no_chdir' => 1,
+  'wanted'     => \&wanted,
+  'preprocess' => \&directories,
+  'no_chdir'   => 1,
 
 }, $base_dir );
 
@@ -52,9 +53,42 @@ for my $inode ( keys %inode ) {
 
 exit 0;
 
-sub wanted {
+sub directories {
 
-  return if $File::Find::name eq $base_dir;
+  if ( $File::Find::dir eq "$base_dir/.git" ) {
+
+    $File::Find::prune = 1;
+    return;
+
+  }
+
+  if ( $File::Find::dir ne $base_dir ) {
+
+    if ( lstat( $File::Find::dir ) ) {
+
+      if ( ! $st_dev || $st_dev != $File::Find::topdev ) {
+  
+        $File::Find::prune = 1;
+        return;
+          
+      }
+  
+      ( my $dir = $File::Find::dir ) =~ s{^$base_dir/}{};
+  
+      printf $METAFILE "%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $dir;
+
+    } else {
+
+      warn "Problem getting stat on $File::Find::dir ($!), skipping.\n";
+
+    };
+  }
+
+  sort grep { ! /^\.\.?$/ } @_;
+
+}
+
+sub wanted {
 
   lstat( $File::Find::name ) or do {
     warn "Problem getting stat on $File::Find::name ($!), skipping.\n";

@@ -4,10 +4,10 @@
 # post-checkout or post-merge).
 
 use Carp;
+use Fcntl 'S_ISDIR';
 use IPC::Run3::Simple;
 use Text::Diff;
-#use Unix::Mknod ':all';
-use Unix::Mknod;
+use Unix::Mknod ();
 
 IPC::Run3::Simple::chomp_out( 1 );
 IPC::Run3::Simple::default_stderr( \my $err );
@@ -69,8 +69,8 @@ for my $fix ( @diff ) {
 
     }
 
-    chmod_file( $name, $mode );
     chown_file( $name, $uid, $gid );
+    chmod_file( $name, $mode );
 
   } elsif ( $fix =~ s/^CF: // ) {
 
@@ -85,10 +85,18 @@ for my $fix ( @diff ) {
 
     my ( $uid, $gid, $mode, $name ) = split /\0/, $fix;
 
+    if ( S_ISDIR( $mode ) && ! -e $name ) {
+
+      mkdir $name or do {
+        warn "Unable to create directory $name ($!), skipping\n";
+        next;
+      };
+    }
+
     if ( -e $name ) {
 
-      chmod_file( $name, $mode );
       chown_file( $name, $uid, $gid );
+      chmod_file( $name, $mode );
 
     } else {
 

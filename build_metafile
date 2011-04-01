@@ -58,7 +58,7 @@ exit 0;
 
 sub directories {
 
-  if ( $File::Find::dir eq File::Spec->catfile( $base_dir, '.git' ) {
+  if ( $File::Find::dir eq File::Spec->catfile( $base_dir, '.git' ) ) {
 
     $File::Find::prune = 1;
     return;

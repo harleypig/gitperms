@@ -9,6 +9,7 @@ use warnings;
 use Data::Dumper ();
 use Fcntl ':mode';
 use File::Find ();
+use File::Spec ();
 use File::stat ':FIELDS';
 use IPC::Run3::Simple;
 
@@ -17,6 +18,8 @@ IPC::Run3::Simple::chomp_out( 1 );
 IPC::Run3::Simple::default_stderr( \my $err );
 
 run3({ 'cmd' => [qw( git rev-parse --show-toplevel )], 'stdout' => \my $base_dir });
+
+$base_dir = File::Spec->canonpath( $base_dir );
 
 chdir $base_dir
   or die "Unable to change to git top level directory: $!\n";
@@ -55,7 +58,7 @@ exit 0;
 
 sub directories {
 
-  if ( $File::Find::dir eq "$base_dir/.git" ) {
+  if ( $File::Find::dir eq File::Spec->catfile( $base_dir, '.git' ) {
 
     $File::Find::prune = 1;
     return;
@@ -67,14 +70,14 @@ sub directories {
     if ( lstat( $File::Find::dir ) ) {
 
       if ( ! $st_dev || $st_dev != $File::Find::topdev ) {
-  
+
         $File::Find::prune = 1;
         return;
-          
+
       }
-  
-      ( my $dir = $File::Find::dir ) =~ s{^$base_dir/}{};
-  
+
+      my $dir = File::Spec->abs2rel( $File::Find::dir, $base_dir );
+
       printf $METAFILE "%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $dir;
 
     } else {
@@ -84,7 +87,7 @@ sub directories {
     };
   }
 
-  sort grep { ! /^\.\.?$/ } @_;
+  File::Spec->no_upwards( @_ );
 
 }
 
@@ -99,10 +102,10 @@ sub wanted {
 
     $File::Find::prune = 1;
     return;
-        
+
   }
 
-  ( my $name = $File::Find::name ) =~ s{^$base_dir/}{};
+  my $name = File::Spec->abs2rel( $File::Find::name, $base_dir );
 
   if ( $st_rdev ) {
 

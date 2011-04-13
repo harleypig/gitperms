@@ -93,8 +93,6 @@ sub directories {
 
 sub wanted {
 
-  # XXX: Look into using Filesys::Ext2 for obtaining extended attributes
-
   lstat( $File::Find::name ) or do {
     warn "Problem getting stat on $File::Find::name ($!), skipping.\n";
     return;

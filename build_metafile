@@ -107,7 +107,9 @@ sub wanted {
 
   my $name = File::Spec->abs2rel( $File::Find::name, $base_dir );
 
-  if ( $st_rdev ) {
+  my $ftype = ($st_mode & 0170000)>>12;
+
+  if ( $st_rdev || $ftype == 1 || $ftype == 12 ) {
 
     my $meta = sprintf "CF: %d\0%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $st_rdev, $name;
     push @rdev, $meta;

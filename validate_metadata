@@ -80,7 +80,6 @@ for my $fix ( @diff ) {
       warn "Problem making special file $name: $!\n";
 
     chown_file( $name, $uid, $gid );
-    chmod_file( $name, $mode );
 
   } else {
 

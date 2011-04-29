@@ -111,7 +111,7 @@ sub wanted {
 
   if ( $st_rdev || $ftype == 1 || $ftype == 12 ) {
 
-    printf "CF: %d\0%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $st_rdev, $name;
+    printf $METAFILE "CF: %d\0%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $st_rdev, $name;
     return;
 
   }

@@ -13,6 +13,9 @@ use File::Spec ();
 use File::stat ':FIELDS';
 use IPC::Run3::Simple;
 
+my $metafile = shift
+  or die "Expecting file to save metadata to.\n";
+
 IPC::Run3::Simple::croak_on_err( 1 );
 IPC::Run3::Simple::chomp_out( 1 );
 IPC::Run3::Simple::default_stderr( \my $err );
@@ -27,13 +30,10 @@ chdir $base_dir
 run3({ 'cmd' => [qw( git ls-files )], 'stdout' => \my @git_files });
 my %git_file; @git_file{ @git_files } = undef;
 
-my $metafile = shift
-  or die "Expecting file to save metadata to.\n";
-
 open my $METAFILE, '>', $metafile
   or die "Unable to open $metafile for writing: $!\n";
 
-my ( %inode, @rdev );
+my %hardlink;
 
 File::Find::find({
 
@@ -43,13 +43,10 @@ File::Find::find({
 
 }, $base_dir );
 
-print $METAFILE $_
-  for @rdev;
+for my $hardlink ( keys %hardlink ) {
 
-for my $inode ( keys %inode ) {
-
-  my $meta  = $inode{ $inode }{ 'meta' };
-  my $names = join "\0", @{ $inode{ $inode }{ 'names' } };
+  my $meta  = $hardlink{ $hardlink }{ 'meta' };
+  my $names = join "\0", @{ $hardlink{ $hardlink }{ 'names' } };
   printf $METAFILE "HL: %s\0%s\n", $meta, $names;
 
 }
@@ -84,6 +81,9 @@ sub directories {
 
       warn "Problem getting stat on $File::Find::dir ($!), skipping.\n";
 
+      $File::Find::prune = 1;
+      return;
+
     };
   }
 
@@ -107,12 +107,11 @@ sub wanted {
 
   my $name = File::Spec->abs2rel( $File::Find::name, $base_dir );
 
-  my $ftype = ($st_mode & 0170000)>>12;
+  my $ftype = ( $st_mode & 0170000 ) >> 12;
 
   if ( $st_rdev || $ftype == 1 || $ftype == 12 ) {
 
-    my $meta = sprintf "CF: %d\0%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $st_rdev, $name;
-    push @rdev, $meta;
+    printf "CF: %d\0%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $st_rdev, $name;
     return;
 
   }
@@ -123,11 +122,11 @@ sub wanted {
 
     my $meta = sprintf "%d\0%d\0%d", $st_uid, $st_gid, $st_mode;
 
-    ( die sprintf "This shouldn't happen! $name is a hardlink and has different meta data ($meta) than %s\n", Data::Dumper::Dumper $inode{ $st_ino } )
-      if exists $inode{ $st_ino } && $meta ne $inode{ $st_ino }{ 'meta' };
+    ( die sprintf "This shouldn't happen! $name is a hardlink and has different meta data ($meta) than %s\n", Data::Dumper::Dumper $hardlink{ $st_ino } )
+      if exists $hardlink{ $st_ino } && $meta ne $hardlink{ $st_ino }{ 'meta' };
 
-    $inode{ $st_ino }{ 'meta' } = $meta;
-    push @{ $inode{ $st_ino }{ 'names' } }, $name;
+    $hardlink{ $st_ino }{ 'meta' } = $meta;
+    push @{ $hardlink{ $st_ino }{ 'names' } }, $name;
     return;
 
   }

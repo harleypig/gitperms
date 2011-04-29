@@ -9,6 +9,9 @@ use IPC::Run3::Simple;
 use Text::Diff;
 use Unix::Mknod ();
 
+my $git_version = shift
+  or die "Expecting a file to validate.\n";
+
 IPC::Run3::Simple::chomp_out( 1 );
 IPC::Run3::Simple::default_stderr( \my $err );
 
@@ -16,9 +19,6 @@ run3({ 'cmd' => [qw( git rev-parse --show-toplevel )], 'stdout' => \my $base_dir
 
 chdir $base_dir
   or die "Unable to change to git top level directory: $!\n";
-
-my $git_version = shift
-  or die "Expecting a file to validate.\n";
 
 die "Git version of metadata file does not exist\n"
   unless -e $git_version;
@@ -49,29 +49,36 @@ for my $fix ( @diff ) {
 
   next unless $fix =~ s/^\+//;
 
+  # XXX: Check for non-existant files.
+
   if ( $fix =~ s/^HL: // ) {
 
     my ( $uid, $gid, $mode, $name, @links ) = split /\0/, $fix;
 
-    # XXX: Check for non-existant files.
+    chown_file( $name, $uid, $gid );
+    chmod_file( $name, $mode );
 
     if ( @links > 0 ) {
 
       my $links = join ' ', @links;
 
       warn "Deleting $links\n";
+
       my $removed = unlink @links;
+
       warn "Unable to remove all files.\n"
         if $removed != @links;
 
       warn "Hardlinking $links to $name\n";
-      link $name, $_ for @links;
 
+      for my $link ( @links ) {
+
+        my $linked = link $name, $link;
+        warn "Unable to link $name to $link: $!\n"
+          unless $linked;
+
+      }
     }
-
-    chown_file( $name, $uid, $gid );
-    chmod_file( $name, $mode );
-
   } elsif ( $fix =~ s/^CF: // ) {
 
     my ( $uid, $gid, $mode, $rdev, $name ) = split /\0/, $fix;

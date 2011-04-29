@@ -1,1 +1,2 @@
 # XXX: Look into using Filesys::Ext2 for obtaining extended attributes
+# XXX: Need to determine whether or not missing files need to be handled and how

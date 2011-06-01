@@ -8,6 +8,7 @@ use warnings;
 
 use Data::Dumper ();
 use Fcntl ':mode';
+use File::Basename ();
 use File::Find ();
 use File::Spec ();
 use File::stat ':FIELDS';
@@ -29,6 +30,17 @@ chdir $base_dir
 
 run3({ 'cmd' => [qw( git ls-files )], 'stdout' => \my @git_files });
 my %git_file; @git_file{ @git_files } = undef;
+
+for my $file ( @git_files ) {
+
+  $git_file{ $file } = undef;
+  
+  my $dirname = File::Basename::dirname( $file );
+  next if $dirname eq '.';
+
+  $git_file{ $dirname } = undef;
+
+}
 
 open my $METAFILE, '>', $metafile
   or die "Unable to open $metafile for writing: $!\n";
@@ -66,14 +78,14 @@ sub directories {
 
     if ( lstat( $File::Find::dir ) ) {
 
-      if ( ! $st_dev || $st_dev != $File::Find::topdev ) {
+      my $dir = File::Spec->abs2rel( $File::Find::dir, $base_dir );
+
+      if ( ! exists $git_file{ $dir } || ! $st_dev || $st_dev != $File::Find::topdev ) {
 
         $File::Find::prune = 1;
         return;
 
       }
-
-      my $dir = File::Spec->abs2rel( $File::Find::dir, $base_dir );
 
       printf $METAFILE "%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $dir;
 
@@ -84,26 +96,25 @@ sub directories {
       $File::Find::prune = 1;
       return;
 
-    };
+    }
   }
 
-  File::Spec->no_upwards( @_ );
+  my @files = File::Spec->no_upwards( @_ );
+  sort { -d "$File::Find::dir/$b" <=> -d "$File::Find::dir/$a" } @files;
 
 }
 
 sub wanted {
+
+  # We've already handled directories
+  return if -d $File::Find::name;
 
   lstat( $File::Find::name ) or do {
     warn "Problem getting stat on $File::Find::name ($!), skipping.\n";
     return;
   };
 
-  if ( ! $st_dev || $st_dev != $File::Find::topdev ) {
-
-    $File::Find::prune = 1;
-    return;
-
-  }
+  return if ! $st_dev || $st_dev != $File::Find::topdev;
 
   my $name = File::Spec->abs2rel( $File::Find::name, $base_dir );
 

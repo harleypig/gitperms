@@ -99,8 +99,7 @@ sub directories {
     }
   }
 
-  my @files = File::Spec->no_upwards( @_ );
-  sort { -d "$File::Find::dir/$b" <=> -d "$File::Find::dir/$a" } @files;
+  File::Spec->no_upwards( @_ );
 
 }
 

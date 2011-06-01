@@ -80,7 +80,8 @@ sub directories {
 
       my $dir = File::Spec->abs2rel( $File::Find::dir, $base_dir );
 
-      if ( ! exists $git_file{ $dir } || ! $st_dev || $st_dev != $File::Find::topdev ) {
+#      if ( ! exists $git_file{ $dir } || ! $st_dev || $st_dev != $File::Find::topdev ) {
+      if ( ! exists $git_file{ $dir } ) {
 
         $File::Find::prune = 1;
         return;
@@ -92,7 +93,6 @@ sub directories {
     } else {
 
       warn "Problem getting stat on $File::Find::dir ($!), skipping.\n";
-
       $File::Find::prune = 1;
       return;
 
@@ -114,7 +114,7 @@ sub wanted {
     return;
   };
 
-  return if ! $st_dev || $st_dev != $File::Find::topdev;
+#  return if ! $st_dev || $st_dev != $File::Find::topdev;
 
   my $name = File::Spec->abs2rel( $File::Find::name, $base_dir );
 

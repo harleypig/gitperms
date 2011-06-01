@@ -34,7 +34,7 @@ my %git_file; @git_file{ @git_files } = undef;
 for my $file ( @git_files ) {
 
   $git_file{ $file } = undef;
-  
+
   my $dirname = File::Basename::dirname( $file );
   next if $dirname eq '.';
 

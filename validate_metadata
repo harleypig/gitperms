@@ -3,6 +3,9 @@
 # This file is expecting to be run from a git hook (at the moment, either
 # post-checkout or post-merge).
 
+use strict;
+use warnings;
+
 use Carp;
 use Fcntl 'S_ISDIR';
 use IPC::Run3::Simple;
@@ -21,14 +24,14 @@ chdir $base_dir
   or die "Unable to change to git top level directory: $!\n";
 
 die "Git version of metadata file does not exist\n"
-  unless -e $git_version;
+  unless -f $git_version;
 
 my $validate_file = '.validate_metafile';
 
 run3( [ '.git/hooks/build_metafile', $validate_file ] );
 
 die "$validate_file was not created"
-  unless -e $validate_file;
+  unless -f $validate_file;
 
 my @diff = split /\n/, diff $validate_file, $git_version, { 'CONTEXT' => 0 };
 

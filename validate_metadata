@@ -3,6 +3,8 @@
 # This file is expecting to be run from a git hook (at the moment, either
 # post-checkout or post-merge).
 
+# Look into using Path::Class::Rule instead of File::Find
+
 use strict;
 use warnings;
 

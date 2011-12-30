@@ -2,6 +2,8 @@
 
 eval 'exec /usr/bin/perl -S $0 ${1+"$@"}' if 0;
 
+# Look into using Path::Class::Rule instead of File::Find
+
 use strict;
 use warnings;
 #no warnings 'File::Find';

@@ -78,6 +78,8 @@ if ( $write_mode ) {
 
       # Compare recorded perms to actual perms in the working dir
       my ( $path, $mode, $uid, $gid ) = ( $1, $2, $3, $4 );
+      $uid =~ /^\d+$/ or $uid = getpwnam($uid);
+      $gid =~ /^\d+$/ or $gid = getgrnam($gid);
       my $fullpath = $topdir . $path;
       my ( undef, undef, $wmode, undef, $wuid, $wgid ) = lstat( $fullpath );
       $wmode = sprintf "%04o", $wmode & 07777;

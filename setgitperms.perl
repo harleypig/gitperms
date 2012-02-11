@@ -74,7 +74,7 @@ if ( $write_mode ) {
 
     chomp;
 
-    if ( /^(.*)  mode=(\S+)\s+uid=(\w+)\s+gid=(\w+)/ ) {
+    if ( /^(.*)  mode=(\S+)\s+uid=([\w.-]+)\s+gid=([\w.-]+)/ ) {
 
       # Compare recorded perms to actual perms in the working dir
       my ( $path, $mode, $uid, $gid ) = ( $1, $2, $3, $4 );

@@ -3,6 +3,8 @@
 eval 'exec /usr/bin/perl -S $0 ${1+"$@"}' if 0;
 
 # Look into using Path::Class::Rule instead of File::Find
+# Look into using File::ExtAttr to get/set extended attributes.
+# Don't forget to ++1 them on metacpan if you end up using them.
 
 use strict;
 use warnings;

@@ -3,8 +3,6 @@
 # This file is expecting to be run from a git hook (at the moment, either
 # post-checkout or post-merge).
 
-# Look into using Path::Class::Rule instead of File::Find
-
 use strict;
 use warnings;
 
@@ -17,10 +15,9 @@ use Unix::Mknod ();
 my $git_version = shift
   or die "Expecting a file to validate.\n";
 
-IPC::Run3::Simple::chomp_out( 1 );
-IPC::Run3::Simple::default_stderr( \my $err );
-
 run3({ 'cmd' => [qw( git rev-parse --show-toplevel )], 'stdout' => \my $base_dir });
+
+$base_dir = File::Spec->canonpath( $base_dir );
 
 chdir $base_dir
   or die "Unable to change to git top level directory: $!\n";

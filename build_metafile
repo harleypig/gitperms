@@ -1,8 +1,8 @@
 #! /usr/bin/perl
 
-eval 'exec /usr/bin/perl -S $0 ${1+"$@"}' if 0;
+# http://rjbs.manxome.org/rubric/entry/1981 says File::Find is still the
+# fastest, so we'll stick with that until something better comes along.
 
-# Look into using Path::Class::Rule instead of File::Find
 # Look into using File::ExtAttr to get/set extended attributes.
 # Don't forget to ++1 them on metacpan if you end up using them.
 
@@ -20,10 +20,6 @@ use IPC::Run3::Simple;
 
 my $metafile = shift
   or die "Expecting file to save metadata to.\n";
-
-IPC::Run3::Simple::croak_on_err( 1 );
-IPC::Run3::Simple::chomp_out( 1 );
-IPC::Run3::Simple::default_stderr( \my $err );
 
 run3({ 'cmd' => [qw( git rev-parse --show-toplevel )], 'stdout' => \my $base_dir });
 

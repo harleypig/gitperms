@@ -8,156 +8,214 @@
 
 use strict;
 use warnings;
-#no warnings 'File::Find';
 
-use Data::Dumper ();
-use Fcntl ':mode';
-use File::Basename ();
-use File::Find ();
-use File::Spec ();
-use File::stat ':FIELDS'; # overrides perl's stat and lstat
-use IPC::Run3::Simple;
+#use Data::Dumper ();
+#use Fcntl ':mode';
+#use File::Basename ();
+#use File::Find ();
+#use File::Spec ();
+#use File::stat ':FIELDS'; # overrides perl's stat and lstat
+#use IPC::Run3::Simple;
+use Getopt::Long;
 
-my $metafile = shift
-  or die "Expecting file to save metadata to.\n";
+# Are we in a git repository?
+# If not, die
+# Are we running as post-commit or post-{checkout,merge}?
+# If post-commit
+#   get list of files being committed
+#   for each file being committed
+#     gather metadata
+#     save metadata in note
+# Else if post-{checkout,merge}
+#   get list of files that were changed
+#   for each file that changed
+#     get metadata from note
+#     modify metadata for file
 
-open my $METAFILE, '>', $metafile
-  or die "Unable to open $metafile for writing: $!\n";
-
-my $base_dir = get_toplevel();
-
-chdir $base_dir
+chdir get_toplevel();
   or die "Unable to change to git top level directory: $!\n";
 
-my $git_file = get_gitfiles();
+GetOptions(
+  save => \my $save,
+  set  => \my $set,
+) or die "Problem parsing options, exiting.\n";
 
-my ( @metadata, %hardlink );
+die "either --save or --set is required\n"
+  if ! defined $save && ! defined $set;
 
-File::Find::find({
+die "--save and --set are mutually exclusive\n"
+  if defined $save && defined $set;
 
-  'wanted'     => \&wanted,
-  'preprocess' => \&directories,
-  'no_chdir'   => 1,
+if ( defined $save ) {
 
-}, $base_dir );
+  my @files = run3([qw( git diff-tree HEAD )]);
 
-for my $hardlink ( keys %hardlink ) {
+} elsif ( defined $set ) {
+} else {
 
-  my $meta  = $hardlink{ $hardlink }{ 'meta' };
-  my $names = join "\0", @{ $hardlink{ $hardlink }{ 'names' } };
-  printf $METAFILE "HL: %s\0%s\n", $meta, $names;
+  die "Unknown and unhandled error! How'd you get here?\n";
 
 }
 
-exit 0;
-
-###############################################################################################
+#my %format = (
+#  RF => "%d\0%d\0%d\0%s\n",         # Regular file
+#  CF => "CF: %d\0%d\0%d\0%d\0%s\n", # Character file
+#  HL => "HL: %s\0%s\n",             # Hardlink
+#);
+#
+##for my $file ( 
+#my ( @metadata, %hardlink );
+#
+##File::Find::find({
+##
+##  'wanted'     => \&wanted,
+##  'preprocess' => \&directories,
+##  'no_chdir'   => 1,
+##
+##}, $base_dir );
+#
+##for my $hardlink ( keys %hardlink ) {
+##
+##  my $meta  = $hardlink{ $hardlink }{ 'meta' };
+##  my $names = join "\0", @{ $hardlink{ $hardlink }{ 'names' } };
+##  push @metadata, sprintf $format{ HL }, $meta, $names;
+##
+##}
+#
+#exit 0;
+#
+################################################################################################
 
 sub get_toplevel {
 
-  run3({ 'cmd' => [qw( git rev-parse --show-toplevel )], 'stdout' => \my $toplevel });
+  my ( $toplevel, $err, $syserr ) = run3([qw( git rev-parse --show-toplevel )]);
+
+  die "System error: $syserr\n"
+    if $syserr;
+
+  die "Unable to get top level directory: $err\n"
+    if $err;
+
   $toplevel = File::Spec->canonpath( $toplevel );
   return $toplevel;
 
 }
 
-sub get_gitfiles {
-
-  run3({ 'cmd' => [qw( git ls-files )], 'stdout' => \my @gitfiless });
-  my %gitfile; @gitfile{ @gitfiless } = undef;
-
-  for my $file ( @gitfiles ) {
-
-    $gitfile{ $file } = undef;
-
-    my $dirname = File::Basename::dirname( $file );
-    next if $dirname eq '.';
-
-    # Is it faster to just reassaign the same value or to check for existence?
-    # next if exists $gitfile{ $dirname };
-
-    $gitfile{ $dirname } = undef;
-
-  }
-}
-
-sub directories {
-
-  # Skip this repositories .git directory
-  if ( $File::Find::dir eq File::Spec->catfile( $base_dir, '.git' ) ) {
-
-    $File::Find::prune = 1;
-    return;
-
-  }
-
-  if ( $File::Find::dir ne $base_dir ) {
-
-    if ( lstat( $File::Find::dir ) ) {
-
-      my $dir = File::Spec->abs2rel( $File::Find::dir, $base_dir );
-
-      # If this directory isn't in the list of git files then skip it.
-      if ( ! exists $git_file->{ $dir } ) {
-
-        $File::Find::prune = 1;
-        return;
-
-      }
-
-      printf $METAFILE "%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $dir;
-
-    } else {
-
-      warn "Problem getting stat on $File::Find::dir ($!), skipping.\n";
-      $File::Find::prune = 1;
-      return;
-
-    }
-  }
-
-  File::Spec->no_upwards( @_ );
-
-}
-
-sub wanted {
-
-  # We've already handled directories
-  return if -d $File::Find::name;
-
-  lstat( $File::Find::name ) or do {
-    warn "Problem getting stat on $File::Find::name ($!), skipping.\n";
-    return;
-  };
-
-#  return if ! $st_dev || $st_dev != $File::Find::topdev;
-
-  my $name = File::Spec->abs2rel( $File::Find::name, $base_dir );
-
-  my $ftype = ( $st_mode & 0170000 ) >> 12;
-
-  if ( $st_rdev || $ftype == 1 || $ftype == 12 ) {
-
-    printf $METAFILE "CF: %d\0%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $st_rdev, $name;
-    return;
-
-  }
-
-  return unless exists $git_file->{ $name };
-
-  if ( $st_nlink > 1 ) {
-
-    my $meta = sprintf "%d\0%d\0%d", $st_uid, $st_gid, $st_mode;
-
-    ( die sprintf "This shouldn't happen! $name is a hardlink and has different meta data ($meta) than %s\n", Data::Dumper::Dumper $hardlink{ $st_ino } )
-      if exists $hardlink{ $st_ino } && $meta ne $hardlink{ $st_ino }{ 'meta' };
-
-    $hardlink{ $st_ino }{ 'meta' } = $meta;
-    push @{ $hardlink{ $st_ino }{ 'names' } }, $name;
-    return;
-
-  }
-
-  printf $METAFILE "%d\0%d\0%d\0%s\n", $st_uid, $st_gid, $st_mode, $name;
-
-}
+#sub get_gitfiles {
+#
+#  run3({ cmd => [qw( git ls-files --full-name )], stdout => \my @gitfiles });
+#  run3({ cmd => [qw( git config -f /.gitmodules --get-regexp ^submodule\..*\.path$ )], stdout => \my @submodules });
+#
+#  my %submodule = map { ( split /\s/ )[1], undef } @submodules;
+#
+#  # Directories are not explicitly handled in git, so we need to find the
+#  # directories ourselves.
+#
+#  my %gitfile;
+#
+#  for my $file ( @gitfiles ) {
+#
+#    # submodules need to be handled differently, and is outside the scope of
+#    # this script.
+#
+#    next if exists $submodule{ $file };
+#
+#    $gitfile{ $file } = undef;
+#
+#    my $dirname = File::Basename::dirname( $file );
+#    next if $dirname eq '.';
+#
+#    # Is it faster to just reassaign the same value or to check for existence?
+#    # next if exists $gitfile{ $dirname };
+#
+#    $gitfile{ $dirname } = undef;
+#
+#  }
+#
+#  return \%gitfile;
+#
+#}
+#
+#sub directories {
+#
+#  # Skip this repositories .git directory
+#  if ( $File::Find::dir eq File::Spec->catfile( $base_dir, '.git' ) ) {
+#
+#    $File::Find::prune = 1;
+#    return;
+#
+#  }
+#
+#  if ( $File::Find::dir ne $base_dir ) {
+#
+#    if ( lstat( $File::Find::dir ) ) {
+#
+#      my $dir = File::Spec->abs2rel( $File::Find::dir, $base_dir );
+#
+#      # If this directory isn't in the list of git files then skip it.
+#      if ( ! exists $git_file->{ $dir } ) {
+#
+#        $File::Find::prune = 1;
+#        return;
+#
+#      }
+#
+#      push @metadata, sprintf $format{ RF }, $st_uid, $st_gid, $st_mode, $dir;
+#
+#    } else {
+#
+#      warn "Problem getting stat on $File::Find::dir ($!), skipping.\n";
+#      $File::Find::prune = 1;
+#      return;
+#
+#    }
+#  }
+#
+#  File::Spec->no_upwards( @_ );
+#
+#}
+#
+#sub wanted {
+#
+#  # We've already handled directories
+#  return if -d $File::Find::name;
+#
+#  lstat( $File::Find::name ) or do {
+#    warn "Problem getting stat on $File::Find::name ($!), skipping.\n";
+#    return;
+#  };
+#
+#  my $name = File::Spec->abs2rel( $File::Find::name, $base_dir );
+#
+#  # If it's not in git we don't care about it
+#  return unless exists $git_file->{ $name };
+#
+#  my $ftype = ( $st_mode & 0170000 ) >> 12;
+#
+#  if ( $st_rdev || $ftype == 1 || $ftype == 12 ) {
+#
+#    # this is a character file
+#
+#    push @metadata, sprintf $format{ CF }, $st_uid, $st_gid, $st_mode, $st_rdev, $name;
+#    return;
+#
+#  }
+#
+#  if ( $st_nlink > 1 ) {
+#
+#    # this is a hardlinked file
+#
+#    my $meta = sprintf "%d\0%d\0%d", $st_uid, $st_gid, $st_mode;
+#
+#    ( die sprintf "This shouldn't happen! $name is a hardlink and has different meta data ($meta) than %s\n", Data::Dumper::Dumper $hardlink{ $st_ino } )
+#      if exists $hardlink{ $st_ino } && $meta ne $hardlink{ $st_ino }{ 'meta' };
+#
+#    $hardlink{ $st_ino }{ 'meta' } = $meta;
+#    push @{ $hardlink{ $st_ino }{ 'names' } }, $name;
+#    return;
+#
+#  }
+#
+#  push @metadata, sprintf $format{ RF }, $st_uid, $st_gid, $st_mode, $name;
+#
+#}

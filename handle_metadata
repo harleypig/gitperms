@@ -1,44 +1,27 @@
 #! /usr/bin/perl
 
-# http://rjbs.manxome.org/rubric/entry/1981 says File::Find is still the
-# fastest, so we'll stick with that until something better comes along.
-
-# Look into using File::ExtAttr to get/set extended attributes.
-# Don't forget to ++1 them on metacpan if you end up using them.
-
 use strict;
 use warnings;
 
-#use Data::Dumper ();
-#use Fcntl ':mode';
-#use File::Basename ();
-#use File::Find ();
-#use File::Spec ();
-#use File::stat ':FIELDS'; # overrides perl's stat and lstat
-#use IPC::Run3::Simple;
+use Fcntl qw':mode S_ISDIR';
+use File::Spec ();
+use File::stat;  # overrides perl's stat and lstat
+use File::Touch;
 use Getopt::Long;
+use IPC::Run3::Simple;
+use Linux::Ext2::Attributes 'set_attrs';
+use YAML;
+use Unix::Mknod;
 
-# Are we in a git repository?
-# If not, die
-# Are we running as post-commit or post-{checkout,merge}?
-# If post-commit
-#   get list of files being committed
-#   for each file being committed
-#     gather metadata
-#     save metadata in note
-# Else if post-{checkout,merge}
-#   get list of files that were changed
-#   for each file that changed
-#     get metadata from note
-#     modify metadata for file
+our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
 
-chdir get_toplevel();
+my $topdir = get_toplevel();
+
+chdir $topdir
   or die "Unable to change to git top level directory: $!\n";
 
-GetOptions(
-  save => \my $save,
-  set  => \my $set,
-) or die "Problem parsing options, exiting.\n";
+GetOptions( save => \my $save, set => \my $set, quiet => \my $quiet )
+  or die "Problem parsing options, exiting.\n";
 
 die "either --save or --set is required\n"
   if ! defined $save && ! defined $set;
@@ -46,49 +29,39 @@ die "either --save or --set is required\n"
 die "--save and --set are mutually exclusive\n"
   if defined $save && defined $set;
 
+my %metadata;
+
+# Get all files git knows about
+run3( { cmd => [qw( git ls-tree -r -t HEAD )], stdout => \my @files } );
+
+# Get unstaged files so we can ignore them
+run3( { cmd => [qw( git status --porcelain --untracked-files=no )], stdout => \my @ignore } );
+
+my %ignore; @ignore{ grep { s/^\s\S\s// } @ignore } = undef;
+
 if ( defined $save ) {
 
-  my @files = run3([qw( git diff-tree HEAD )]);
+  get_metadata_from_system();
+  set_note();
 
 } elsif ( defined $set ) {
+
+  get_note();
+  set_metadata_in_system()
+
 } else {
 
   die "Unknown and unhandled error! How'd you get here?\n";
 
 }
 
-#my %format = (
-#  RF => "%d\0%d\0%d\0%s\n",         # Regular file
-#  CF => "CF: %d\0%d\0%d\0%d\0%s\n", # Character file
-#  HL => "HL: %s\0%s\n",             # Hardlink
-#);
-#
-##for my $file ( 
-#my ( @metadata, %hardlink );
-#
-##File::Find::find({
-##
-##  'wanted'     => \&wanted,
-##  'preprocess' => \&directories,
-##  'no_chdir'   => 1,
-##
-##}, $base_dir );
-#
-##for my $hardlink ( keys %hardlink ) {
-##
-##  my $meta  = $hardlink{ $hardlink }{ 'meta' };
-##  my $names = join "\0", @{ $hardlink{ $hardlink }{ 'names' } };
-##  push @metadata, sprintf $format{ HL }, $meta, $names;
-##
-##}
-#
-#exit 0;
-#
+exit 0;
+
 ################################################################################################
 
 sub get_toplevel {
 
-  my ( $toplevel, $err, $syserr ) = run3([qw( git rev-parse --show-toplevel )]);
+  my ( $toplevel, $err, $syserr ) = run3( [qw( git rev-parse --show-toplevel )] );
 
   die "System error: $syserr\n"
     if $syserr;
@@ -101,121 +74,192 @@ sub get_toplevel {
 
 }
 
-#sub get_gitfiles {
-#
-#  run3({ cmd => [qw( git ls-files --full-name )], stdout => \my @gitfiles });
-#  run3({ cmd => [qw( git config -f /.gitmodules --get-regexp ^submodule\..*\.path$ )], stdout => \my @submodules });
-#
-#  my %submodule = map { ( split /\s/ )[1], undef } @submodules;
-#
-#  # Directories are not explicitly handled in git, so we need to find the
-#  # directories ourselves.
-#
-#  my %gitfile;
-#
-#  for my $file ( @gitfiles ) {
-#
-#    # submodules need to be handled differently, and is outside the scope of
-#    # this script.
-#
-#    next if exists $submodule{ $file };
-#
-#    $gitfile{ $file } = undef;
-#
-#    my $dirname = File::Basename::dirname( $file );
-#    next if $dirname eq '.';
-#
-#    # Is it faster to just reassaign the same value or to check for existence?
-#    # next if exists $gitfile{ $dirname };
-#
-#    $gitfile{ $dirname } = undef;
-#
-#  }
-#
-#  return \%gitfile;
-#
-#}
-#
-#sub directories {
-#
-#  # Skip this repositories .git directory
-#  if ( $File::Find::dir eq File::Spec->catfile( $base_dir, '.git' ) ) {
-#
-#    $File::Find::prune = 1;
-#    return;
-#
-#  }
-#
-#  if ( $File::Find::dir ne $base_dir ) {
-#
-#    if ( lstat( $File::Find::dir ) ) {
-#
-#      my $dir = File::Spec->abs2rel( $File::Find::dir, $base_dir );
-#
-#      # If this directory isn't in the list of git files then skip it.
-#      if ( ! exists $git_file->{ $dir } ) {
-#
-#        $File::Find::prune = 1;
-#        return;
-#
-#      }
-#
-#      push @metadata, sprintf $format{ RF }, $st_uid, $st_gid, $st_mode, $dir;
-#
-#    } else {
-#
-#      warn "Problem getting stat on $File::Find::dir ($!), skipping.\n";
-#      $File::Find::prune = 1;
-#      return;
-#
-#    }
-#  }
-#
-#  File::Spec->no_upwards( @_ );
-#
-#}
-#
-#sub wanted {
-#
-#  # We've already handled directories
-#  return if -d $File::Find::name;
-#
-#  lstat( $File::Find::name ) or do {
-#    warn "Problem getting stat on $File::Find::name ($!), skipping.\n";
-#    return;
-#  };
-#
-#  my $name = File::Spec->abs2rel( $File::Find::name, $base_dir );
-#
-#  # If it's not in git we don't care about it
-#  return unless exists $git_file->{ $name };
-#
-#  my $ftype = ( $st_mode & 0170000 ) >> 12;
-#
-#  if ( $st_rdev || $ftype == 1 || $ftype == 12 ) {
-#
-#    # this is a character file
-#
-#    push @metadata, sprintf $format{ CF }, $st_uid, $st_gid, $st_mode, $st_rdev, $name;
-#    return;
-#
-#  }
-#
-#  if ( $st_nlink > 1 ) {
-#
-#    # this is a hardlinked file
-#
-#    my $meta = sprintf "%d\0%d\0%d", $st_uid, $st_gid, $st_mode;
-#
-#    ( die sprintf "This shouldn't happen! $name is a hardlink and has different meta data ($meta) than %s\n", Data::Dumper::Dumper $hardlink{ $st_ino } )
-#      if exists $hardlink{ $st_ino } && $meta ne $hardlink{ $st_ino }{ 'meta' };
-#
-#    $hardlink{ $st_ino }{ 'meta' } = $meta;
-#    push @{ $hardlink{ $st_ino }{ 'names' } }, $name;
-#    return;
-#
-#  }
-#
-#  push @metadata, sprintf $format{ RF }, $st_uid, $st_gid, $st_mode, $name;
-#
-#}
+sub get_metadata_from_system {
+
+  for my $f ( @files ) {
+
+    my ( $sha1, $file ) = $f =~ /^\d+\s\w+\s([[:xdigit:]]+)\s(.*)$/;
+
+    next if exists $ignore{ $file };
+
+    my $md = $metadata{ $sha1 } ||= {};
+
+    if ( my $st = lstat( $file ) ) {
+
+      my $inode = $md->{ $st->ino } ||= {};
+
+      my $ftype = ( $st->mode & 0170000 ) >> 12;
+
+      $inode->{ type }
+        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                 ? 'CF'
+        : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $inode != {} ) ? 'HL'
+        : S_ISDIR( $st->mode )                                         ? 'DIR'
+        : 'RF';
+
+      $inode->{ $_ } = $st->$_ for qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks );
+
+      push @{ $inode->{ name } }, $file;
+
+      if ( my $attributes = Linux::Ext2::Attributes->load( $file ) ) {
+
+        $attributes = $attributes->strip;
+        $inode->{ extnd_attr } = $attributes->flags;
+
+      } else {
+
+        ! defined $quiet && warn "Problem getting extended attributes on $file ($!).\n";
+
+      }
+    } else {
+
+      ! defined $quiet && warn "Problem getting stat on $file ($!), skipping.\n";
+      next;
+
+    }
+  } ## end for my $f ( @files)
+} ## end sub get_metadata_from_system
+
+sub set_metadata_in_system {
+
+  for my $sha1 ( keys %metadata ) {
+
+    my $md = $metadata{ $sha1 };
+
+    for my $inode ( keys %$md ) {
+
+      my $attr = $md->{ $inode };
+
+      ! defined $quiet && warn "$sha1, $inode has multiple names, only the first one will be handled"
+        if ( @{ $attr->{ name } } > 1 ) && ( $attr->{ type } ne 'HL' );
+
+      my $name = shift @{ $attr->{ name } };
+
+      warn "$name does not exist, skipping\n"
+        if ( ! -e $name ) && ( $attr->{ type } ne 'HL' );
+
+      if ( $attr->{ type } eq 'HL' ) {
+
+        # Remove all but the first file
+        # Hardlink removed files to first file.
+
+        if ( @{ $attr->{ name } } == 0 ) {
+
+          warn "No linked files (how did you get here?!), skipping\n";
+          next;
+
+        }
+
+        my $files = join ', ', @{ $attr->{ name } };
+
+        ! defined $quiet && warn "unlinking $files\n";
+
+        my $removed = unlink @{ $attr->{ name } };
+
+        warn "Unable to remove all files.\n"
+          if $removed != @{ $attr->{ name } };
+
+        ! defined $quiet && warn "Hardlinking $files to $name\n";
+
+        for my $link ( @{ $attr->{ name } } ) {
+
+          my $linked = link $name, $link;
+          warn "Unable to link $name to $link: $!\n"
+            unless $linked;
+
+        }
+      } elsif ( $attr->{ type } eq 'CF' ) {
+
+        ( Unix::Mknod::mknod( $name, $attr->{ mode }, $attr->{ rdev } ) == -1 ) &&
+          warn "Problem making special file $name: $!\n";
+
+      } elsif ( $attr->{ type } eq 'DIR' ) {
+
+        if ( ! -d $name ) {
+
+          warn "$name exists and is not a directory, skipping\n";
+          next;
+
+        }
+
+      } elsif ( $attr->{ type } ne 'RF' ) {
+
+        ! defined $quiet && warn sprintf "Unknown file type or type note set for %s\n", join ', ', @{ $attr->{ name } };
+        next;
+
+      }
+
+      chown_file( $name, $attr->{ uid }, $attr->{ gid } );
+      chmod_file( $name, $attr->{ mode } );
+      extnd_attr( $name, $attr->{ extnd_attr } );
+      touch_file( $name, $attr->{ atime }, $attr->{ mtime } );
+
+    }
+  } ## end for my $sha1 ( keys...)
+} ## end sub set_metadata_in_system
+
+sub set_note {
+
+  my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( add HEAD -m ) );
+
+  my ( $out, $err ) = run3( [ @cmd, Dump( \%metadata ) ] );
+  ! defined $quiet && warn "$out\n$err" if $err;
+
+}
+
+sub get_note {
+
+  my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
+  my ( $out, $err ) = run3( \@cmd );
+
+  warn $err if $err;
+
+  %metadata = %{ Load( "$out\n" ) };
+
+}
+
+sub chmod_file {
+
+  my ( $name, $mode ) = @_;
+
+  ! defined $quiet && warn sprintf "chmod %04o, $name\n", $mode & 07777;
+
+  my $chmodded = chmod +( $mode & 07777 ), $name;
+  warn "Unable to change mode for $name: $!\n"
+    unless $chmodded;
+
+}
+
+sub chown_file {
+
+  my ( $name, $uid, $gid ) = @_;
+
+  ! defined $quiet && warn "chown $uid, $gid, $name\n";
+
+  my $chowned = chown $uid, $gid, $name;
+  warn "Unable to change owner and/or group for $name: $!\n"
+    unless $chowned == 1;
+
+}
+
+sub touch_file {
+
+  my ( $name, $atime, $mtime ) = @_;
+
+  ! defined $quiet && warn "touch -a $atime -m $mtime $name\n";
+
+  my $t = File::Touch->new( atime => $atime, mtime => $mtime, no_create => 1 );
+
+  $t->touch( $name )
+    or warn "Unable to touch $name\n";
+
+}
+
+sub extnd_attr {
+
+  my ( $name, $attr ) = @_;
+
+  ! defined $quiet && warn "chattr $attr $name\n";
+  set_attrs( $name, $attr )
+    or warn "Unable to set extended attributes on $name\n";
+
+}

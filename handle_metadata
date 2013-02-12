@@ -1,15 +1,19 @@
 #! /usr/bin/perl
 
+## no critic qw( ValuesAndExpressions::ProhibitAccessOfPrivateData ValuesAndExpressions::ProhibitLeadingZeros )
+## no critic qw( Lax::ProhibitLeadingZeros::ExceptChmod ErrorHandling::RequireCarping Bangs::ProhibitNumberedNames )
+
 # git config --add remote.origin.fetch '+refs/tags/*:regs/tags/*'
 # git config --add remote.origin.fetch '+refs/notes/*:refs/notes/*'
 # git config --add remote.origin.push '+refs/heads/*:refs/heads/*'
 # git config --add remote.origin.push '+refs/tags/*:refs/tags/*'
 # git config --add remote.origin.push '+refs/notes/*:refs/notes/*'
 
+use 5.006;
 use strict;
 use warnings;
 
-use Fcntl qw':mode S_ISDIR';
+use Fcntl qw( :mode S_ISDIR );
 use File::Spec ();
 use File::stat;  # overrides perl's stat and lstat
 use File::Touch;
@@ -53,7 +57,7 @@ if ( defined $save ) {
 } elsif ( defined $set ) {
 
   get_note();
-  set_metadata_in_system()
+  set_metadata_in_system();
 
 } else {
 
@@ -90,17 +94,18 @@ sub get_metadata_from_system {
 
     my $md = $metadata{ $sha1 } ||= {};
 
-    if ( my $st = lstat( $file ) ) {
+    if ( my $st = lstat $file ) {
 
       my $inode = $md->{ $st->ino } ||= {};
 
+      ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
       my $ftype = ( $st->mode & 0170000 ) >> 12;
 
       $inode->{ type }
-        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                 ? 'CF'
+        = ( $st->rdev || $ftype == 1 || $ftype == 12 ) ? 'CF'
         : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $inode != {} ) ? 'HL'
-        : S_ISDIR( $st->mode )                                         ? 'DIR'
-        : 'RF';
+        : S_ISDIR( $st->mode ) ? 'DIR'
+        :                        'RF';
 
       $inode->{ $_ } = $st->$_ for qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks );
 
@@ -123,15 +128,18 @@ sub get_metadata_from_system {
 
     }
   } ## end for my $f ( @files)
+
+  return;
+
 } ## end sub get_metadata_from_system
 
-sub set_metadata_in_system {
+sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplexity )
 
   for my $sha1 ( keys %metadata ) {
 
     my $md = $metadata{ $sha1 };
 
-    for my $inode ( keys %$md ) {
+    for my $inode ( keys %$md ) { ## no critic qw( References::ProhibitDoubleSigils )
 
       my $attr = $md->{ $inode };
 
@@ -143,7 +151,7 @@ sub set_metadata_in_system {
       warn "$name does not exist, skipping\n"
         if ( ! -e $name ) && ( $attr->{ type } ne 'HL' );
 
-      if ( $attr->{ type } eq 'HL' ) {
+      if ( $attr->{ type } eq 'HL' ) { ## no critic qw( ControlStructures::ProhibitCascadingIfElse )
 
         # Remove all but the first file
         # Hardlink removed files to first file.
@@ -175,8 +183,9 @@ sub set_metadata_in_system {
         }
       } elsif ( $attr->{ type } eq 'CF' ) {
 
-        ( Unix::Mknod::mknod( $name, $attr->{ mode }, $attr->{ rdev } ) == -1 ) &&
-          warn "Problem making special file $name: $!\n";
+        ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
+        ( Unix::Mknod::mknod( $name, $attr->{ mode }, $attr->{ rdev } ) == -1 )
+          && warn "Problem making special file $name: $!\n";
 
       } elsif ( $attr->{ type } eq 'DIR' ) {
 
@@ -199,8 +208,11 @@ sub set_metadata_in_system {
       extnd_attr( $name, $attr->{ extnd_attr } );
       touch_file( $name, $attr->{ atime }, $attr->{ mtime } );
 
-    }
+    } ## end for my $inode ( keys...)
   } ## end for my $sha1 ( keys...)
+
+  return;
+
 } ## end sub set_metadata_in_system
 
 sub set_note {
@@ -209,6 +221,8 @@ sub set_note {
 
   my ( $out, $err ) = run3( [ @cmd, Dump( \%metadata ) ] );
   ! defined $quiet && warn "$out\n$err" if $err;
+
+  return;
 
 }
 
@@ -221,17 +235,22 @@ sub get_note {
 
   %metadata = %{ Load( "$out\n" ) };
 
+  return;
+
 }
 
 sub chmod_file {
 
   my ( $name, $mode ) = @_;
 
+  ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
   ! defined $quiet && warn sprintf "chmod %04o, $name\n", $mode & 07777;
 
   my $chmodded = chmod +( $mode & 07777 ), $name;
   warn "Unable to change mode for $name: $!\n"
     unless $chmodded;
+
+  return;
 
 }
 
@@ -244,6 +263,8 @@ sub chown_file {
   my $chowned = chown $uid, $gid, $name;
   warn "Unable to change owner and/or group for $name: $!\n"
     unless $chowned == 1;
+
+  return;
 
 }
 
@@ -258,6 +279,8 @@ sub touch_file {
   $t->touch( $name )
     or warn "Unable to touch $name\n";
 
+  return;
+
 }
 
 sub extnd_attr {
@@ -267,5 +290,7 @@ sub extnd_attr {
   ! defined $quiet && warn "chattr $attr $name\n";
   set_attrs( $name, $attr )
     or warn "Unable to set extended attributes on $name\n";
+
+  return;
 
 }

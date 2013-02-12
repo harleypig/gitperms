@@ -3,10 +3,6 @@
 dest_dir=$1
 src_dir=$(dirname $0)
 
-echo $dest_dir
-echo $src_dir
-exit
-
 if [[ ! -d $dest_dir ]]; then
 
   echo "$dest_dir doesn't exist"

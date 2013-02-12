@@ -49,7 +49,7 @@ else
 
 fi
 
-cp "${src_dir}/handle-metadata" $hooks
+cp "${src_dir}/handle_metadata" $hooks
 
 cd $dest_dir
 

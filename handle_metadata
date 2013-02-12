@@ -3,12 +3,6 @@
 ## no critic qw( ValuesAndExpressions::ProhibitAccessOfPrivateData ValuesAndExpressions::ProhibitLeadingZeros )
 ## no critic qw( Lax::ProhibitLeadingZeros::ExceptChmod ErrorHandling::RequireCarping Bangs::ProhibitNumberedNames )
 
-# git config --add remote.origin.fetch '+refs/tags/*:regs/tags/*'
-# git config --add remote.origin.fetch '+refs/notes/*:refs/notes/*'
-# git config --add remote.origin.push '+refs/heads/*:refs/heads/*'
-# git config --add remote.origin.push '+refs/tags/*:refs/tags/*'
-# git config --add remote.origin.push '+refs/notes/*:refs/notes/*'
-
 use 5.006;
 use strict;
 use warnings;

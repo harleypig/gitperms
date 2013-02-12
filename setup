@@ -1,15 +1,20 @@
 #!/bin/bash
 
-dir=$1
+dest_dir=$1
+src_dir=$(dirname $0)
 
-if [[ ! -d $dir ]]; then
+echo $dest_dir
+echo $src_dir
+exit
 
-  echo "$dir doesn't exist"
+if [[ ! -d $dest_dir ]]; then
+
+  echo "$dest_dir doesn't exist"
   exit 1
 
 fi
 
-hooks="${dir}/.git/hooks"
+hooks="${dest_dir}/.git/hooks"
 
 if [[ ! -d $hooks ]]; then
 
@@ -24,7 +29,7 @@ if [[ -e "${hooks}/post-commit" ]]; then
 
 else
 
-  cp post-commit $hooks
+  cp "${src_dir}/post-commit" $hooks
 
 fi
 
@@ -34,7 +39,7 @@ if [[ -e "${hooks}/post-checkout" ]]; then
 
 else
 
-  cp post-checkout $hooks
+  cp "${src_dir}/post-checkout" $hooks
 
 fi
 
@@ -48,4 +53,12 @@ else
 
 fi
 
-cp handle-metadata $hooks
+cp "${src_dir}/handle-metadata" $hooks
+
+cd $dest_dir
+
+git config --add remote.origin.fetch '+refs/tags/*:regs/tags/*'
+git config --add remote.origin.fetch '+refs/notes/*:refs/notes/*'
+git config --add remote.origin.push '+refs/heads/*:refs/heads/*'
+git config --add remote.origin.push '+refs/tags/*:refs/tags/*'
+git config --add remote.origin.push '+refs/notes/*:refs/notes/*'

@@ -1,0 +1,51 @@
+#!/bin/bash
+
+dir=$1
+
+if [[ ! -d $dir ]]; then
+
+  echo "$dir doesn't exist"
+  exit 1
+
+fi
+
+hooks="${dir}/.git/hooks"
+
+if [[ ! -d $hooks ]]; then
+
+  echo "$hooks doesn't exist"
+  exit 1
+
+fi
+
+if [[ -e "${hooks}/post-commit" ]]; then
+
+  echo "post-commit already exists in ${hooks}, skipping"
+
+else
+
+  cp post-commit $hooks
+
+fi
+
+if [[ -e "${hooks}/post-checkout" ]]; then
+
+  echo "post-checkout already exists in ${hooks}, skipping"
+
+else
+
+  cp post-checkout $hooks
+
+fi
+
+if [[ -e "${hooks}/post-merge" ]]; then
+
+  echo "post-merge already exists in ${hooks}, skipping"
+
+else
+
+  ln -s "${hooks}/post-checkout" "${hooks}/post-merge"
+
+fi
+
+cp handle-metadata $hooks

@@ -10,11 +10,12 @@ use warnings;
 use Fcntl qw( :mode S_ISDIR );
 use File::Spec ();
 use File::stat;  # overrides perl's stat and lstat
+use File::Temp 'tempfile';
 use File::Touch;
 use Getopt::Long;
 use IPC::Run3::Simple;
 use Linux::Ext2::Attributes 'set_attrs';
-use YAML;
+use YAML::Syck;
 use Unix::Mknod;
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
@@ -47,11 +48,13 @@ if ( defined $save ) {
 
   get_metadata_from_system();
   set_note();
+  print "Done saving ...\n";
 
 } elsif ( defined $set ) {
 
   get_note();
   set_metadata_in_system();
+  print "Done setting ...\n";
 
 } else {
 
@@ -211,9 +214,13 @@ sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplex
 
 sub set_note {
 
-  my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( add HEAD -m ) );
+  my ( $fh, $filename ) = tempfile( unlink => 1 );
 
-  my ( $out, $err ) = run3( [ @cmd, Dump( \%metadata ) ] );
+  print $fh Dump( \%metadata );
+
+  my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( add HEAD -F ), $filename );
+
+  my ( $out, $err ) = run3( \@cmd );
   ! defined $quiet && warn "$out\n$err" if $err;
 
   return;

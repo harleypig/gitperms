@@ -1,5 +1,11 @@
 Check this repository out somewhere in your development environment.
 
-Either 'cp -a *' all files to your repositories '.git/hooks' directory or link them.
-
 Comments and submissions welcome.
+
+!!! PLEASE REVIEW setup !!!
+
+This setup script works for me in my own development environment.  Please, please double check it to make sure it works for you.
+
+If you're happy with it, run it like so:
+
+setup /path/to/top/level/git/repo

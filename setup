@@ -58,4 +58,3 @@ git config --add remote.origin.fetch '+refs/notes/*:refs/notes/*'
 git config --add remote.origin.push '+refs/heads/*:refs/heads/*'
 git config --add remote.origin.push '+refs/tags/*:refs/tags/*'
 git config --add remote.origin.push '+refs/notes/*:refs/notes/*'
-git config --global push.default current

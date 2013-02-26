@@ -132,6 +132,8 @@ sub get_metadata_from_system {
 
 sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplexity )
 
+  my ( %chown_file, %chmod_file, %touch_file, %extnd_attr );
+
   for my $sha1 ( keys %metadata ) {
 
     my $md = $metadata{ $sha1 };
@@ -195,18 +197,28 @@ sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplex
 
       } elsif ( $attr->{ type } ne 'RF' ) {
 
-        ! defined $quiet && warn sprintf "Unknown file type or type note set for %s\n", join ', ', @{ $attr->{ name } };
+        ! defined $quiet && warn sprintf "Unknown file type or type not set for %s\n", join ', ', @{ $attr->{ name } };
         next;
 
       }
 
-      chown_file( $name, $attr->{ uid }, $attr->{ gid } );
-      chmod_file( $name, $attr->{ mode } );
-      extnd_attr( $name, $attr->{ extnd_attr } );
-      touch_file( $name, $attr->{ atime }, $attr->{ mtime } );
+      my $chown_attr = sprintf '%s_%s', $attr->{ uid }, $attr->{ gid };
+      push @{ $chown_file{ $chown_attr } }, $name;
+
+      push @{ $chmod_file{ $attr->{ mode } } }, $name;
+
+      my $time_attr = sprintf '%s_%s', $attr->{ atime }, $attr->{ mtime };
+      push @{ $touch_file{ $time_attr } }, $name;
+
+      $extnd_attr{ $name } = $attr->{ extnd_attr };
 
     } ## end for my $inode ( keys...)
   } ## end for my $sha1 ( keys...)
+
+  chown_file( \%chown_file );
+  chmod_file( \%chmod_file );
+  touch_file( \%touch_file );
+  extnd_attr( \%extnd_attr );
 
   return;
 
@@ -242,55 +254,89 @@ sub get_note {
 
 sub chmod_file {
 
-  my ( $name, $mode ) = @_;
+  my ( $chmod_file ) = @_;
 
-  ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
-  ! defined $quiet && warn sprintf "chmod %04o, $name\n", $mode & 07777;
+  for my $mode ( keys %$chmod_file ) { ## no critic qw( References::ProhibitDoubleSigils )
 
-  my $chmodded = chmod +( $mode & 07777 ), $name;
-  warn "Unable to change mode for $name: $!\n"
-    unless $chmodded;
+    my @files = $chmod_file->{ $mode };
+
+    # Note: chmod has issues if $mode is a string ... e.g., '0644' is not necessarily the
+    # same as 0644. So we force $mode to be a number with the '+ 0' trick.
+
+    ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
+    ! defined $quiet && warn sprintf "chmod %04o, @files\n", ( $mode + 0 ) & 07777;
+
+    my $m = ( $mode + 0 ) & 07777;
+
+    my $chmodded = chmod $m, @files;
+
+    warn "Unable to change mode for one or more files: $!\n"
+      unless $chmodded == @files;
+
+  } ## end for my $mode ( keys...)
 
   return;
 
-}
+} ## end sub chmod_file
 
 sub chown_file {
 
-  my ( $name, $uid, $gid ) = @_;
+  my ( $chown_file ) = @_;
 
-  ! defined $quiet && warn "chown $uid, $gid, $name\n";
+  for my $attr ( keys %$chown_file ) { ## no critic qw( References::ProhibitDoubleSigils )
 
-  my $chowned = chown $uid, $gid, $name;
-  warn "Unable to change owner and/or group for $name: $!\n"
-    unless $chowned == 1;
+    my ( $uid, $gid ) = split /_/, $attr, 2;
+    my @files = @{ $chown_file->{ $attr } };
+
+    ! defined $quiet && warn "chown $uid, $gid, @files\n";
+
+    my $chowned = chown $uid, $gid, @files;
+
+    warn "Unable to change owner and/or group for one or more files: $!\n"
+      unless $chowned == @files;
+
+  }
 
   return;
 
-}
+} ## end sub chown_file
 
 sub touch_file {
 
-  my ( $name, $atime, $mtime ) = @_;
+  my ( $touch_file ) = @_;
 
-  ! defined $quiet && warn "touch -a $atime -m $mtime $name\n";
+  for my $time ( keys %$touch_file ) { ## no critic qw( References::ProhibitDoubleSigils )
 
-  my $t = File::Touch->new( atime => $atime, mtime => $mtime, no_create => 1 );
+    my ( $atime, $mtime ) = split /_/, $time, 2;
+    my @files = $touch_file->{ $time };
 
-  $t->touch( $name )
-    or warn "Unable to touch $name\n";
+    ! defined $quiet && warn "touch -a $atime -m $mtime @files\n";
+
+    my $t = File::Touch->new( atime => $atime, mtime => $mtime, no_create => 1 );
+
+    my $touched = $t->touch( @files );
+
+    warn "Unable to touch one or more files: $!\n"
+      unless $touched == @files;
+
+  }
 
   return;
 
-}
+} ## end sub touch_file
 
 sub extnd_attr {
 
-  my ( $name, $attr ) = @_;
+  my ( $extnd_attr ) = @_;
 
-  ! defined $quiet && warn "chattr $attr $name\n";
-  set_attrs( $name, $attr )
-    or warn "Unable to set extended attributes on $name\n";
+  while ( my ( $f, $x ) = each %$extnd_attr ) { ## no critic qw( References::ProhibitDoubleSigils )
+
+    ! defined $quiet && warn "chattr $x $f\n";
+
+    set_attrs( $f, $x )
+      or warn "Unable to set extended attributes on $f\n";
+
+  }
 
   return;
 

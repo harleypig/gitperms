@@ -25,7 +25,7 @@ my $topdir = get_toplevel();
 chdir $topdir
   or die "Unable to change to git top level directory: $!\n";
 
-GetOptions( save => \my $save, set => \my $set, quiet => \my $quiet )
+GetOptions( save => \my $save, set => \my $set, quiet => \my $quiet, force => \my $force )
   or die "Problem parsing options, exiting.\n";
 
 die "either --save or --set is required\n"
@@ -236,6 +236,8 @@ sub set_note {
   print $fh Dump( \%metadata );
 
   my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( add HEAD -F ), $filename );
+
+  push @cmd, '--force' if defined $force;
 
   my ( $out, $err ) = run3( \@cmd );
   ! defined $quiet && warn "$out\n$err" if $err;

@@ -263,17 +263,16 @@ sub chmod_file {
     # Note: chmod has issues if $mode is a string ... e.g., '0644' is not necessarily the
     # same as 0644. So we force $mode to be a number with the '+ 0' trick.
 
-    ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
-    ! defined $quiet && warn sprintf "chmod %04o, @files\n", ( $mode + 0 ) & 07777;
+    my $m = ( $mode + 0 ) & 07777; ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
 
-    my $m = ( $mode + 0 ) & 07777;
+    ! defined $quiet && warn sprintf "chmod %04o, @files\n", $m;
 
-    my $chmodded = chmod $m, @files;
+    my $chmodded = chmod do { sprintf '%04o', $m }, @files;
 
     warn "Unable to change mode for one or more files: $!\n"
       unless $chmodded == @files;
 
-  } ## end for my $mode ( keys...)
+  }
 
   return;
 
@@ -308,7 +307,7 @@ sub touch_file {
   for my $time ( keys %$touch_file ) { ## no critic qw( References::ProhibitDoubleSigils )
 
     my ( $atime, $mtime ) = split /_/, $time, 2;
-    my @files = $touch_file->{ $time };
+    my @files = @{ $touch_file->{ $time } };
 
     ! defined $quiet && warn "touch -a $atime -m $mtime @files\n";
 

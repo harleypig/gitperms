@@ -106,7 +106,7 @@ sub get_metadata_from_system {
 
       $inode->{ $_ } = $st->$_ for qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks );
 
-      $inode->{ chmod } = $inode->{ mode } & 07777;
+      $inode->{ chmod } = sprintf '%04o', $inode->{ mode } & 07777;
 
       push @{ $inode->{ name } }, $file;
 

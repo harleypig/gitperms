@@ -147,6 +147,8 @@ sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplex
 
       my $name = shift @{ $attr->{ name } };
 
+      next if exists $ignore{ $file };
+      
       warn "$name does not exist, skipping\n"
         if ( ! -e $name ) && ( $attr->{ type } ne 'HL' );
 

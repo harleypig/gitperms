@@ -1,3 +1,3 @@
 #!/bin/bash
 
-${PWD}/.git/hooks/handle_metadata --set
+${PWD}/.git/hooks/handle_metadata --set --quiet

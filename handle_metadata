@@ -2,6 +2,8 @@
 
 ## no critic qw( ValuesAndExpressions::ProhibitAccessOfPrivateData ValuesAndExpressions::ProhibitLeadingZeros )
 ## no critic qw( Lax::ProhibitLeadingZeros::ExceptChmod ErrorHandling::RequireCarping Bangs::ProhibitNumberedNames )
+## no critic qw( ValuesAndExpressions::RequireQuotedHeredocTerminator ValuesAndExpressions::RestrictLongStrings )
+## no critic qw( ValuesAndExpressions::ProhibitInterpolationOfLiterals ValuesAndExpressions::ProhibitMagicNumbers )
 
 use 5.006;
 use strict;
@@ -15,8 +17,10 @@ use File::Touch;
 use Getopt::Long;
 use IPC::Run3::Simple;
 use Linux::Ext2::Attributes 'set_attrs';
-use YAML::Syck;
+use POSIX;
+use Term::ReadKey;
 use Unix::Mknod;
+use YAML::Syck;
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
 
@@ -25,8 +29,32 @@ my $topdir = get_toplevel();
 chdir $topdir
   or die "Unable to change to git top level directory: $!\n";
 
-GetOptions( save => \my $save, set => \my $set, quiet => \my $quiet, force => \my $force )
-  or die "Problem parsing options, exiting.\n";
+GetOptions(
+  'create-on-missing' => \my $create_on_missing,
+  force               => \my $force,
+  help                => \my $help,
+  quiet               => \my $quiet,
+  save                => \my $save,
+  set                 => \my $set,
+) or die "Problem parsing options, exiting.\n";
+
+my $help_txt = <<EOH;
+
+usage: $0 [options ...]
+
+  --save               Save a note with current permissions information.
+  --force              If there is already a note, overwrite it instead of dying.
+
+  --set                Set permissions according to the note.
+  --create-on-missing  If a note does not exist, create it without prompting the user.
+
+  --quiet              Don't be so noisy.
+  --help               This screen.
+
+EOH
+
+die $help_txt
+  if defined $help;
 
 die "either --save or --set is required\n"
   if ! defined $save && ! defined $set;
@@ -52,9 +80,18 @@ if ( defined $save ) {
 
 } elsif ( defined $set ) {
 
-  get_note();
-  set_metadata_in_system();
-  print "Done setting ...\n";
+  if ( get_note() ) {
+
+    # note existed
+    set_metadata_in_system();
+    print "Done setting ...\n";
+
+  } else {
+
+    # note did not exist
+    print "Done saving ...\n";
+
+  }
 
 } else {
 
@@ -251,13 +288,46 @@ sub get_note {
   my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
   my ( $out, $err ) = run3( \@cmd );
 
-  warn $err if $err;
+  if ( $err =~ /No note found for object/ ) {
+
+    my $create_note = 0;
+
+    if ( defined $create_on_missing ) {
+
+      $create_note = 1;
+
+    } else {
+
+      print "This commit does not have a note associated with it. Do you want to create one now? (Yn) ";
+
+      ReadMode 'cbreak';
+      my $r;
+      do { 0 } while ! defined( $r = ReadKey( -1 ) );
+      ReadMode 'restore';
+
+      $create_note = ( $r =~ /^[y\n]$/i ) ? 1 : 0;
+
+    }
+
+    if ( $create_note ) {
+
+      get_metadata_from_system();
+      set_note();
+      return;
+
+    }
+
+  } else {
+
+    warn $err if $err;
+
+  }
 
   %metadata = %{ Load( "$out\n" ) };
 
-  return;
+  return 1;
 
-}
+} ## end sub get_note
 
 sub chown_file {
 

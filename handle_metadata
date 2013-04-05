@@ -86,13 +86,7 @@ if ( defined $save ) {
     set_metadata_in_system();
     print "Done setting ...\n";
 
-  } else {
-
-    # note did not exist
-    print "Done saving ...\n";
-
   }
-
 } else {
 
   die "Unknown and unhandled error! How'd you get here?\n";
@@ -290,36 +284,38 @@ sub get_note {
 
   if ( $err =~ /No note found for object/ ) {
 
-    my $create_note = 0;
-
     if ( defined $create_on_missing ) {
-
-      $create_note = 1;
-
-    } else {
-
-      print "This commit does not have a note associated with it. Do you want to create one now? (Yn) ";
-
-      ReadMode 'cbreak';
-      my $r;
-      do { 0 } while ! defined( $r = ReadKey( -1 ) );
-      ReadMode 'restore';
-
-      $create_note = ( $r =~ /^[y\n]$/i ) ? 1 : 0;
-
-    }
-
-    if ( $create_note ) {
 
       get_metadata_from_system();
       set_note();
+      print "Missing note created.\n";
       return;
+
+    } else {
+
+      print <<EOT
+
+  !!! This commit does not have a note associated with it. !!!
+
+  Your git action has successfully completed, but no permissions have
+  been set.
+
+  To create a note for this commit, run the following command from the
+  top level of your git repository:
+
+  .git/hooks/handle_metadata --save
+
+  If you wish this to happen automatically, edit the
+  .git/hooks/post-commit file and add the '--create-on-missing' option.
+
+EOT
 
     }
 
   } else {
 
     warn $err if $err;
+    return;
 
   }
 

@@ -282,18 +282,19 @@ sub get_note {
   my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
   my ( $out, $err ) = run3( \@cmd );
 
-  if ( $err =~ /No note found for object/ ) {
+  if ($err) {
+    if ( $err =~ /No note found for object/ ) {
 
-    if ( defined $create_on_missing ) {
+      if ( defined $create_on_missing ) {
 
-      get_metadata_from_system();
-      set_note();
-      print "Missing note created.\n";
-      return;
+        get_metadata_from_system();
+        set_note();
+        print "Missing note created.\n";
+        return;
 
-    } else {
+      } else {
 
-      print <<EOT
+        print "
 
   !!! This commit does not have a note associated with it. !!!
 
@@ -308,20 +309,25 @@ sub get_note {
   If you wish this to happen automatically, edit the
   .git/hooks/post-commit file and add the '--create-on-missing' option.
 
-EOT
+";
+
+        return;
+
+      }
+
+    } else {
+
+      warn "$err\n\nNot setting metadata ...\n";
+      return;
 
     }
 
   } else {
 
-    warn $err if $err;
-    return;
+    %metadata = %{ Load( "$out\n" ) };
 
+    return 1;
   }
-
-  %metadata = %{ Load( "$out\n" ) };
-
-  return 1;
 
 } ## end sub get_note
 

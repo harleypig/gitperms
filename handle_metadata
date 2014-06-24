@@ -9,11 +9,13 @@ use 5.006;
 use strict;
 use warnings;
 
-use Fcntl qw( :mode S_ISDIR );
+use Fcntl qw( :mode S_ISDIR  S_ISLNK);
 use File::Spec ();
 use File::stat;  # overrides perl's stat and lstat
 use File::Temp 'tempfile';
 use File::Touch;
+use File::Basename;
+use Cwd 'abs_path';
 use Getopt::Long;
 use IPC::Run3::Simple;
 use Linux::Ext2::Attributes 'set_attrs';
@@ -24,10 +26,16 @@ use YAML::Syck;
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
 
+$ENV{GIT_DIR} = abs_path(dirname($0).'/../');
+$ENV{GIT_WORK_TREE} = qx/git config --get core.worktree/;
+chomp $ENV{GIT_WORK_TREE};
+
 my $topdir = get_toplevel();
 
 chdir $topdir
   or die "Unable to change to git top level directory: $!\n";
+
+my $se_enforcing = qx/cat \/selinux\/enforce/;
 
 GetOptions(
   'create-on-missing' => \my $create_on_missing,
@@ -133,6 +141,7 @@ sub get_metadata_from_system {
         = ( $st->rdev || $ftype == 1 || $ftype == 12 ) ? 'CF'
         : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $inode != {} ) ? 'HL'
         : S_ISDIR( $st->mode ) ? 'DIR'
+        : S_ISLNK( $st->mode ) ? 'SL'
         :                        'RF';
 
       $inode->{ $_ } = $st->$_ for qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks );
@@ -165,7 +174,7 @@ sub get_metadata_from_system {
 
 sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplexity )
 
-  my ( %chown_file, %chmod_file, %touch_file, %extnd_attr );
+  my ( %chown_file, %chmod_file, %touch_file, %extnd_attr, @restor_ctx );
 
   for my $sha1 ( keys %metadata ) {
 
@@ -174,6 +183,9 @@ sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplex
     for my $inode ( keys %$md ) { ## no critic qw( References::ProhibitDoubleSigils )
 
       my $attr = $md->{ $inode };
+
+      # Don't do anything for symbolic links
+      next if $attr->{ type } eq 'SL';
 
       ! defined $quiet && warn "$sha1, $inode has multiple names, only the first one will be handled"
         if ( @{ $attr->{ name } } > 1 ) && ( $attr->{ type } ne 'HL' );
@@ -248,6 +260,8 @@ sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplex
 
       $extnd_attr{ $name } = $attr->{ extnd_attr };
 
+      push @restor_ctx, $name;
+
     } ## end for my $inode ( keys...)
   } ## end for my $sha1 ( keys...)
 
@@ -255,6 +269,7 @@ sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplex
   chmod_file( \%chmod_file );
   touch_file( \%touch_file );
   extnd_attr( \%extnd_attr );
+  restor_ctx( \@restor_ctx );
 
   return;
 
@@ -413,4 +428,21 @@ sub extnd_attr {
 
   return;
 
+}
+
+sub restor_ctx {
+  my ( $restor_ctx ) = @_;
+
+  return if not $se_enforcing;
+
+  my $top = $topdir =~ m/\/$/ ? $topdir : $topdir."/";
+
+  open RESTORCON, "|restorecon -f- -v" || warn "unable to execute restorecon";
+  foreach (@$restor_ctx) {
+    ! defined $quiet && warn "restorecon ". $top . $_ . "\n";
+    print RESTORCON "". $top . $_ . "\n";
+  }
+  close RESTORCON;
+
+  return;
 }

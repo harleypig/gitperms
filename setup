@@ -1,9 +1,9 @@
-#!/bin/bash
+#!/bin/sh
 
-dest_dir=$1
-src_dir=$(dirname $0)
+dest_dir="$1"
+src_dir="`dirname $0`"
 
-if [[ ! -d $dest_dir ]]; then
+if [ ! -d "$dest_dir" ]; then
 
   echo "$dest_dir doesn't exist"
   exit 1
@@ -12,46 +12,27 @@ fi
 
 hooks="${dest_dir}/.git/hooks"
 
-if [[ ! -d $hooks ]]; then
+if [ ! -d "$hooks" ]; then
 
   echo "$hooks doesn't exist"
   exit 1
 
 fi
 
-if [[ -e "${hooks}/post-commit" ]]; then
+if [ -e "${hooks}/post-commit" -o -e "${hooks}/post-checkout" -o -e "${hooks}/post-merge" ]; then
 
-  echo "post-commit already exists in ${hooks}, skipping"
-
-else
-
-  cp "${src_dir}/post-commit" $hooks
+  echo "One of ${hooks}/post-{commit,checkout,merge} hooks already exist"
+  echo "You will have to setup gitperms manually"
+  exit 1
 
 fi
 
-if [[ -e "${hooks}/post-checkout" ]]; then
+cp "${src_dir}/post-commit" "${src_dir}/post-checkout" "$hooks"
+ln -s post-checkout "${hooks}/post-merge"
+cp "${src_dir}/handle_metadata" "$hooks"
+chmod 0755 "${hooks}/post-commit" "${hooks}/post-checkout" "${hooks}/handle_metadata"
 
-  echo "post-checkout already exists in ${hooks}, skipping"
-
-else
-
-  cp "${src_dir}/post-checkout" $hooks
-
-fi
-
-if [[ -e "${hooks}/post-merge" ]]; then
-
-  echo "post-merge already exists in ${hooks}, skipping"
-
-else
-
-  ln -s "${hooks}/post-checkout" "${hooks}/post-merge"
-
-fi
-
-cp "${src_dir}/handle_metadata" $hooks
-
-cd $dest_dir
+cd "$dest_dir"
 
 git config --add remote.origin.fetch '+refs/tags/*:regs/tags/*'
 git config --add remote.origin.fetch '+refs/notes/*:refs/notes/*'

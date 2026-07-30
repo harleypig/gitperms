@@ -70,15 +70,3 @@ forgotten:
 | `auto-merge: enabled` | Green CI. It exists to skip the manual merge gate *because* server-side checks make it redundant — with no CI it would remove the gate and substitute nothing. Note it is read from the **default branch**, so it applies from the PR *after* the one that adds it, and adopting it implies `deleteBranchOnMerge` (already enabled). |
 | `resolve-task: autonomous` | Green CI. |
 | `merge-finalization: enforce` | A planning doc carrying `[x]` items; none exists yet. |
-
-## Versioning & tagging
-
-Method: **`repo`** — the whole repo versions as one unit, tags `vX.Y.Z`,
-annotated, cut at the merge commit on `master`.
-
-The modernization is a **breaking change** — the git-notes format moves from
-YAML to JSON with no migration path, and the pre-takeover code is preserved on
-the `legacy` branch. It ships as `v2.0.0`.
-
-Version tags also serve pre-commit consumers, who pin `rev:` to a tag when
-using this repo as a hook source.

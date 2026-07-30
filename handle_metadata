@@ -13,7 +13,6 @@ use Fcntl      qw( :mode O_NONBLOCK O_RDONLY S_ISDIR S_ISLNK );
 use File::Spec ();
 use File::stat;  # overrides perl's stat and lstat
 use File::Temp 'tempfile';
-use File::Touch;
 use Cwd 'abs_path';
 use Getopt::Long;
 use IO::Select ();
@@ -520,9 +519,7 @@ sub touch_file {
 
     ! defined $quiet && warn "touch -a $atime -m $mtime @files\n";
 
-    my $t = File::Touch->new( atime => $atime, mtime => $mtime, no_create => 1 );
-
-    my $touched = $t->touch( @files );
+    my $touched = utime $atime, $mtime, @files;
 
     warn "Unable to touch one or more files: $!\n"
       unless $touched == @files;

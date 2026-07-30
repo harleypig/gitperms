@@ -9,7 +9,7 @@ use 5.014;
 use strict;
 use warnings;
 
-use Fcntl qw( :mode S_ISDIR  S_ISLNK);
+use Fcntl      qw( :mode S_ISDIR  S_ISLNK);
 use File::Spec ();
 use File::stat;  # overrides perl's stat and lstat
 use File::Temp 'tempfile';
@@ -27,9 +27,9 @@ use YAML::Syck;
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
 
-$ENV{GIT_DIR} = abs_path(dirname($0).'/../');
-$ENV{GIT_WORK_TREE} = qx/git config --get core.worktree/;
-chomp $ENV{GIT_WORK_TREE};
+$ENV{ GIT_DIR }       = abs_path( dirname( $0 ) . '/../' );
+$ENV{ GIT_WORK_TREE } = qx/git config --get core.worktree/;
+chomp $ENV{ GIT_WORK_TREE };
 
 my $topdir = get_toplevel();
 
@@ -154,7 +154,7 @@ sub run_cmd {
       ${ $buffer_for{ fileno $fh } } .= $buf;
 
     }
-  }
+  } ## end while ( my @ready = ...)
 
   waitpid $pid, 0;
 
@@ -200,11 +200,11 @@ sub get_metadata_from_system {
       my $ftype = ( $st->mode & 0170000 ) >> 12;
 
       $inode->{ type }
-        = ( $st->rdev || $ftype == 1 || $ftype == 12 ) ? 'CF'
+        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                 ? 'CF'
         : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $inode != {} ) ? 'HL'
-        : S_ISDIR( $st->mode ) ? 'DIR'
-        : S_ISLNK( $st->mode ) ? 'SL'
-        :                        'RF';
+        : S_ISDIR( $st->mode )                                         ? 'DIR'
+        : S_ISLNK( $st->mode )                                         ? 'SL'
+        :                                                                'RF';
 
       $inode->{ $_ } = $st->$_ for qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks );
 
@@ -359,7 +359,7 @@ sub get_note {
   my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
   my ( $out, $err ) = run_cmd( @cmd );
 
-  if ($err) {
+  if ( $err ) {
     if ( $err =~ /No note found for object/ ) {
 
       if ( defined $create_on_missing ) {
@@ -390,7 +390,7 @@ sub get_note {
 
         return;
 
-      }
+      } ## end else [ if ( defined $create_on_missing)]
 
     } else {
 
@@ -497,12 +497,12 @@ sub restor_ctx {
 
   return if not $se_enforcing;
 
-  my $top = $topdir =~ m/\/$/ ? $topdir : $topdir."/";
+  my $top = $topdir =~ m/\/$/ ? $topdir : $topdir . "/";
 
   open RESTORCON, "|restorecon -f- -v" || warn "unable to execute restorecon";
-  foreach (@$restor_ctx) {
-    ! defined $quiet && warn "restorecon ". $top . $_ . "\n";
-    print RESTORCON "". $top . $_ . "\n";
+  foreach ( @$restor_ctx ) {
+    ! defined $quiet && warn "restorecon " . $top . $_ . "\n";
+    print RESTORCON "" . $top . $_ . "\n";
   }
   close RESTORCON;
 

@@ -18,8 +18,7 @@ use Getopt::Long;
 use IO::Select ();
 use IPC::Open3 'open3';
 use Symbol 'gensym';
-use POSIX;
-use Unix::Mknod;
+use POSIX 'mkfifo';
 use YAML::Syck;
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
@@ -348,9 +347,7 @@ sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplex
         }
       } elsif ( $attr->{ type } eq 'CF' ) {
 
-        ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
-        ( Unix::Mknod::mknod( $name, $attr->{ mode }, $attr->{ rdev } ) == -1 )
-          && warn "Problem making special file $name: $!\n";
+        make_special_file( $name, $attr->{ mode }, $attr->{ rdev } );
 
       } elsif ( $attr->{ type } eq 'DIR' ) {
 
@@ -549,6 +546,53 @@ sub extnd_attr {
   return;
 
 } ## end sub extnd_attr
+
+# Recreate a fifo, character device, or block device. Only root can make the
+# device nodes, so the mknod(1) call is the root-only path; a fifo goes
+# through POSIX::mkfifo, which needs no privilege and no external command.
+#
+# The mode is left to the caller: every name handled here is also queued for
+# chmod, which runs immediately afterwards.
+
+sub make_special_file {
+
+  my ( $name, $mode, $rdev ) = @_;
+
+  if ( S_ISFIFO( $mode ) ) {
+
+    mkfifo( $name, $mode & 07777 )
+      or warn "Problem making fifo $name: $!\n";
+
+    return;
+
+  }
+
+  my $type
+    = S_ISCHR( $mode ) ? 'c'
+    : S_ISBLK( $mode ) ? 'b'
+    :                    undef;
+
+  if ( ! defined $type ) {
+
+    warn "Unknown special file type for $name, skipping\n";
+    return;
+
+  }
+
+  # glibc splits a dev_t's major and minor numbers across the value rather
+  # than storing them contiguously (sys/sysmacros.h), and that is the encoding
+  # perl's stat reports.
+  my $major = ( ( $rdev >> 8 ) & 0xfff ) | ( ( $rdev >> 32 ) & ~0xfff );
+  my $minor = ( $rdev & 0xff ) | ( ( $rdev >> 12 ) & ~0xff );
+
+  my ( $out, $err, $syserr ) = run_cmd( 'mknod', '--', $name, $type, $major, $minor );
+
+  warn "Problem making special file $name: $err\n"
+    if $syserr;
+
+  return;
+
+} ## end sub make_special_file
 
 # Read the ext2 attribute flags of a file, or undef if they cannot be read.
 # Opening non-blocking keeps a fifo from stalling the whole run, and matches

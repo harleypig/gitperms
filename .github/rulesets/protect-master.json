@@ -1,0 +1,36 @@
+{
+    "bypass_actors": [],
+    "conditions": {
+        "ref_name": {
+            "exclude": [],
+            "include": [
+                "refs/heads/master"
+            ]
+        }
+    },
+    "enforcement": "active",
+    "name": "Protect Master Branch",
+    "rules": [
+        {
+            "type": "deletion"
+        },
+        {
+            "type": "non_fast_forward"
+        },
+        {
+            "parameters": {
+                "allowed_merge_methods": [
+                    "squash"
+                ],
+                "dismiss_stale_reviews_on_push": true,
+                "require_code_owner_review": false,
+                "require_last_push_approval": false,
+                "required_approving_review_count": 0,
+                "required_review_thread_resolution": true,
+                "required_reviewers": []
+            },
+            "type": "pull_request"
+        }
+    ],
+    "target": "branch"
+}

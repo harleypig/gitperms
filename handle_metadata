@@ -20,7 +20,6 @@ use Getopt::Long;
 use IPC::Run3::Simple;
 use Linux::Ext2::Attributes 'set_attrs';
 use POSIX;
-use Term::ReadKey;
 use Unix::Mknod;
 use YAML::Syck;
 

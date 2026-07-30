@@ -1,3 +1,45 @@
+================================================================================
+NOTICE: this project is being brought up to date (2026-07)
+
+gitperms had not been touched since 2014, and it no longer works on current
+systems. It is being modernized on master.
+
+  If you are using gitperms today, pin to the `legacy` branch:
+
+      https://github.com/harleypig/gitperms/tree/legacy
+
+  That branch is the code exactly as it stood before this work began.
+
+Why it is broken
+----------------
+
+gitperms depends on Linux::Ext2::Attributes, which no longer builds. The
+kernel header it needs, <linux/ext2_fs.h>, was removed from the Linux UAPI
+years ago (those flags now live in <linux/fs.h> as FS_*_FL). Because that
+module cannot install, the script fails to start on any current distribution.
+
+The SELinux check reads /selinux/enforce, a path modern distributions replaced
+with /sys/fs/selinux/enforce, so that feature is silently inert as well.
+
+What is changing on master
+--------------------------
+
+  - All CPAN dependencies replaced with core Perl -- the goal is zero
+    dependencies. Extended attributes move to a core ioctl call.
+
+  - The git-notes format changes from YAML to JSON. THIS IS NOT BACKWARD
+    COMPATIBLE: notes written by the legacy version will not be readable by
+    the new one, and there is no migration path. This is deliberate.
+
+  - Several long-standing bugs are being fixed, including a broken fetch
+    refspec in `setup` (it wrote "regs/tags/*" instead of "refs/tags/*", so
+    tags were never fetched) and metadata being silently orphaned whenever
+    history is rewritten by rebase or commit --amend.
+
+Until that work lands, master is in flux. Use `legacy`.
+
+================================================================================
+
 Check this repository out somewhere in your development environment.
 
 Comments and submissions welcome.

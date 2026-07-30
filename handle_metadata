@@ -9,7 +9,7 @@ use 5.014;
 use strict;
 use warnings;
 
-use Fcntl      qw( :mode S_ISDIR  S_ISLNK);
+use Fcntl      qw( :mode O_NONBLOCK O_RDONLY S_ISDIR S_ISLNK );
 use File::Spec ();
 use File::stat;  # overrides perl's stat and lstat
 use File::Temp 'tempfile';
@@ -18,13 +18,44 @@ use Cwd 'abs_path';
 use Getopt::Long;
 use IO::Select ();
 use IPC::Open3 'open3';
-use Linux::Ext2::Attributes 'set_attrs';
 use Symbol 'gensym';
 use POSIX;
 use Unix::Mknod;
 use YAML::Syck;
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
+
+# The ext2 attribute ioctls are FS_IOC_GETFLAGS = _IOR( 'f', 1, long ) and
+# FS_IOC_SETFLAGS = _IOW( 'f', 2, long ). An ioctl number encodes the size of
+# its argument, so both values depend on sizeof(long) -- 0x80086601/0x40086602
+# on a 64-bit build, 0x80046601/0x40046602 on a 32-bit one. Derive them from
+# the running perl's long instead of hardcoding either variant.
+#
+#   direction << 30 | size << 16 | type << 8 | number   (asm-generic/ioctl.h)
+#   direction: _IOC_WRITE = 1, _IOC_READ = 2
+
+use constant LONG_SIZE => length pack 'L!', 0;
+
+use constant {
+  FS_IOC_GETFLAGS => ( 2 << 30 ) | ( LONG_SIZE() << 16 ) | ( ord( 'f' ) << 8 ) | 1,
+  FS_IOC_SETFLAGS => ( 1 << 30 ) | ( LONG_SIZE() << 16 ) | ( ord( 'f' ) << 8 ) | 2,
+};
+
+# Attribute bits the kernel reports but will not accept back from userspace
+# (linux/fs.h). They are masked out of a saved snapshot and taken from the
+# file itself when restoring, which is what Linux::Ext2::Attributes' strip()
+# and set_attrs() did.
+
+use constant {
+  FS_DIRTY_FL     => 0x00000100,  # compression: dirty
+  FS_NOCOMP_FL    => 0x00000400,  # compression: do not compress
+  FS_ECOMPR_FL    => 0x00000800,  # compression: compression error
+  FS_INDEX_FL     => 0x00001000,  # hash-indexed directory
+  FS_HUGE_FILE_FL => 0x00040000,  # ext4: huge file
+  FS_EXTENT_FL    => 0x00080000,  # ext4: inode uses extents
+};
+
+use constant FS_READONLY_FLAGS => FS_DIRTY_FL | FS_NOCOMP_FL | FS_ECOMPR_FL | FS_INDEX_FL | FS_HUGE_FILE_FL | FS_EXTENT_FL;
 
 # gitperms may be installed anywhere -- a linked worktree's .git is a file, a
 # submodule's is a pointer, and a copy on PATH has no repository above it at
@@ -238,10 +269,11 @@ sub get_metadata_from_system {
 
       push @{ $inode->{ name } }, $file;
 
-      if ( my $attributes = Linux::Ext2::Attributes->load( $file ) ) {
+      my $attributes = get_file_flags( $file );
 
-        $attributes = $attributes->strip;
-        $inode->{ extnd_attr } = $attributes->flags;
+      if ( defined $attributes ) {
+
+        $inode->{ extnd_attr } = $attributes & ~FS_READONLY_FLAGS;
 
       } else {
 
@@ -507,14 +539,75 @@ sub extnd_attr {
 
   while ( my ( $f, $x ) = each %$extnd_attr ) { ## no critic qw( References::ProhibitDoubleSigils )
 
+    # Nothing was recorded for this file, so there is nothing to restore.
+    next if ! defined $x;
+
     ! defined $quiet && warn "chattr $x $f\n";
 
-    set_attrs( $f, $x )
+    set_file_flags( $f, $x )
       or warn "Unable to set extended attributes on $f\n";
 
   }
 
   return;
+
+} ## end sub extnd_attr
+
+# Read the ext2 attribute flags of a file, or undef if they cannot be read.
+# Opening non-blocking keeps a fifo from stalling the whole run, and matches
+# what lsattr(1) does.
+
+sub get_file_flags {
+
+  my ( $file ) = @_;
+
+  sysopen my $fh, $file, O_RDONLY | O_NONBLOCK
+    or return;
+
+  my $flags = read_flags( $fh );
+
+  close $fh;
+
+  return $flags;
+
+}
+
+# Restore the recorded flags, keeping the bits the kernel will not accept from
+# userspace as the file already has them.
+
+sub set_file_flags {
+
+  my ( $file, $flags ) = @_;
+
+  sysopen my $fh, $file, O_RDONLY | O_NONBLOCK
+    or return;
+
+  my $current = read_flags( $fh );
+
+  return if ! defined $current;
+
+  my $wanted = ( $current & FS_READONLY_FLAGS ) | ( $flags & ~FS_READONLY_FLAGS );
+  my $packed = pack 'L!', $wanted;
+
+  my $set = ioctl $fh, FS_IOC_SETFLAGS, $packed;
+
+  close $fh;
+
+  return $set;
+
+} ## end sub set_file_flags
+
+sub read_flags {
+
+  my ( $fh ) = @_;
+
+  # The ioctl is declared to take a long, so the buffer is sized to one, but
+  # the kernel exchanges an int through it.
+  my $packed = pack 'L!', 0;
+
+  return if ! ioctl $fh, FS_IOC_GETFLAGS, $packed;
+
+  return scalar unpack 'L!', $packed;
 
 }
 

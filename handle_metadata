@@ -1,11 +1,11 @@
-#! /usr/bin/perl
+#!/usr/bin/env perl
 
 ## no critic qw( ValuesAndExpressions::ProhibitAccessOfPrivateData ValuesAndExpressions::ProhibitLeadingZeros )
 ## no critic qw( Lax::ProhibitLeadingZeros::ExceptChmod ErrorHandling::RequireCarping Bangs::ProhibitNumberedNames )
 ## no critic qw( ValuesAndExpressions::RequireQuotedHeredocTerminator ValuesAndExpressions::RestrictLongStrings )
 ## no critic qw( ValuesAndExpressions::ProhibitInterpolationOfLiterals ValuesAndExpressions::ProhibitMagicNumbers )
 
-use 5.006;
+use 5.014;
 use strict;
 use warnings;
 

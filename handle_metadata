@@ -17,8 +17,10 @@ use File::Touch;
 use File::Basename;
 use Cwd 'abs_path';
 use Getopt::Long;
-use IPC::Run3::Simple;
+use IO::Select ();
+use IPC::Open3 'open3';
 use Linux::Ext2::Attributes 'set_attrs';
+use Symbol 'gensym';
 use POSIX;
 use Unix::Mknod;
 use YAML::Syck;
@@ -72,10 +74,10 @@ die "--save and --set are mutually exclusive\n"
 my %metadata;
 
 # Get all files git knows about
-run3( { cmd => [qw( git ls-tree -r -t HEAD )], stdout => \my @files } );
+my @files = split /\n/, ( run_cmd( qw( git ls-tree -r -t HEAD ) ) )[0];
 
 # Get unstaged files so we can ignore them
-run3( { cmd => [qw( git status --porcelain --untracked-files=no )], stdout => \my @ignore } );
+my @ignore = split /\n/, ( run_cmd( qw( git status --porcelain --untracked-files=no ) ) )[0];
 
 my %ignore; @ignore{ grep { s/^\s\S\s// } @ignore } = undef;
 
@@ -104,11 +106,72 @@ exit 0;
 
 ################################################################################################
 
+# Run a command with no shell involved, capturing its stdout and stderr
+# separately. Returns ( $stdout, $stderr, $syserr ) with one trailing newline
+# chomped from each stream, where $syserr is the raw $? of the finished child
+# -- or -1 when the command could not be spawned at all, in which case the
+# reason is returned as $stderr.
+
+sub run_cmd {
+
+  my @cmd = @_;
+
+  my ( $child_in, $child_out );
+  my $child_err = gensym;
+
+  my $pid = eval { open3 $child_in, $child_out, $child_err, @cmd };
+
+  return ( q{}, $@, -1 )
+    if ! $pid;
+
+  # Nothing here feeds a command on stdin, and an open pipe would hang any
+  # child that tried to read one.
+  close $child_in;
+
+  my ( $out, $err ) = ( q{}, q{} );
+
+  # Read whichever pipe has data. Draining one to EOF first deadlocks as soon
+  # as the other fills its pipe buffer, which a large `git ls-tree` easily
+  # does.
+  my %buffer_for = ( fileno $child_out => \$out, fileno $child_err => \$err );
+
+  my $select = IO::Select->new( $child_out, $child_err );
+
+  while ( my @ready = $select->can_read ) {
+
+    for my $fh ( @ready ) {
+
+      my $bytes = sysread $fh, my $buf, 8192;
+
+      if ( ! $bytes ) {
+
+        $select->remove( $fh );
+        close $fh;
+        next;
+
+      }
+
+      ${ $buffer_for{ fileno $fh } } .= $buf;
+
+    }
+  }
+
+  waitpid $pid, 0;
+
+  my $syserr = $?;
+
+  chomp $out;
+  chomp $err;
+
+  return ( $out, $err, $syserr );
+
+} ## end sub run_cmd
+
 sub get_toplevel {
 
-  my ( $toplevel, $err, $syserr ) = run3( [qw( git rev-parse --show-toplevel )] );
+  my ( $toplevel, $err, $syserr ) = run_cmd( qw( git rev-parse --show-toplevel ) );
 
-  die "System error: $syserr\n"
+  die "System error: $syserr\n$err\n"
     if $syserr;
 
   die "Unable to get top level directory: $err\n"
@@ -284,7 +347,7 @@ sub set_note {
 
   push @cmd, '--force' if defined $force;
 
-  my ( $out, $err ) = run3( \@cmd );
+  my ( $out, $err ) = run_cmd( @cmd );
   ! defined $quiet && warn "$out\n$err" if $err;
 
   return;
@@ -294,7 +357,7 @@ sub set_note {
 sub get_note {
 
   my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
-  my ( $out, $err ) = run3( \@cmd );
+  my ( $out, $err ) = run_cmd( @cmd );
 
   if ($err) {
     if ( $err =~ /No note found for object/ ) {

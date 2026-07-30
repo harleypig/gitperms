@@ -17,9 +17,9 @@ use Cwd 'abs_path';
 use Getopt::Long;
 use IO::Select ();
 use IPC::Open3 'open3';
+use JSON::PP ();
 use Symbol 'gensym';
 use POSIX 'mkfifo';
-use YAML::Syck;
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
 
@@ -395,7 +395,13 @@ sub set_note {
 
   my ( $fh, $filename ) = tempfile( unlink => 1 );
 
-  print $fh Dump( \%metadata );
+  # canonical keeps the key order stable so successive notes diff cleanly;
+  # pretty keeps the note readable through `git notes show`.
+  print { $fh } JSON::PP->new->utf8->canonical->pretty->encode( \%metadata );
+
+  # git reads the file itself, so the buffer has to reach disk first.
+  close $fh
+    or warn "Unable to write the note to $filename: $!\n";
 
   my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( add HEAD -F ), $filename );
 
@@ -406,7 +412,7 @@ sub set_note {
 
   return;
 
-}
+} ## end sub set_note
 
 sub get_note {
 
@@ -455,7 +461,7 @@ sub get_note {
 
   } else {
 
-    %metadata = %{ Load( "$out\n" ) };
+    %metadata = %{ JSON::PP->new->utf8->decode( $out ) };
 
     return 1;
   }

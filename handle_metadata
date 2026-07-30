@@ -14,7 +14,6 @@ use File::Spec ();
 use File::stat;  # overrides perl's stat and lstat
 use File::Temp 'tempfile';
 use File::Touch;
-use File::Basename;
 use Cwd 'abs_path';
 use Getopt::Long;
 use IO::Select ();
@@ -27,11 +26,19 @@ use YAML::Syck;
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
 
-$ENV{ GIT_DIR }       = abs_path( dirname( $0 ) . '/../' );
-$ENV{ GIT_WORK_TREE } = qx/git config --get core.worktree/;
-chomp $ENV{ GIT_WORK_TREE };
+# gitperms may be installed anywhere -- a linked worktree's .git is a file, a
+# submodule's is a pointer, and a copy on PATH has no repository above it at
+# all -- so ask git where the repository is instead of deriving it from this
+# script's own path. Resolve both before exporting either: with GIT_DIR set
+# and no work tree, git answers --show-toplevel with the current directory.
 
-my $topdir = get_toplevel();
+my $git_dir = get_git_dir();
+my $topdir  = get_toplevel();
+
+$ENV{ GIT_DIR } = $git_dir;
+
+$ENV{ GIT_WORK_TREE } = $topdir
+  if length $topdir;
 
 chdir $topdir
   or die "Unable to change to git top level directory: $!\n";
@@ -166,6 +173,25 @@ sub run_cmd {
   return ( $out, $err, $syserr );
 
 } ## end sub run_cmd
+
+sub get_git_dir {
+
+  my ( $git_dir, $err, $syserr ) = run_cmd( qw( git rev-parse --git-dir ) );
+
+  die "System error: $syserr\n$err\n"
+    if $syserr;
+
+  die "Unable to get git directory: $err\n"
+    if $err;
+
+  # git answers with a path relative to the current directory whenever it can,
+  # and the caller is about to chdir to the top level.
+  my $abs_git_dir = abs_path( $git_dir )
+    or die "Unable to resolve git directory '$git_dir': $!\n";
+
+  return $abs_git_dir;
+
+} ## end sub get_git_dir
 
 sub get_toplevel {
 

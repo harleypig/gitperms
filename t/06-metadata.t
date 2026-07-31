@@ -442,4 +442,52 @@ subtest 'hardlinked files are classified' => sub {
 
 };
 
+subtest 'a link count above one is not on its own a hardlink' => sub {
+
+  # The HL classification used to test `$inode != {}`, which compares the
+  # address of the record against a fresh anonymous hash and is therefore
+  # always true: nlink > 1 alone was enough to be called a hardlink. A file
+  # whose other link is outside the repository -- or simply untracked -- has
+  # one name in the note, so the restore hit its own "No linked files (how did
+  # you get here?!)" guard and skipped the file entirely.
+  #
+  # What the test means is "this record already holds another name for the
+  # same inode", which is the only case the restore can act on.
+
+  my $repo = new_repo();
+
+  write_file( $repo, 'tracked', "shared\n" );
+
+  commit_all( $repo, 'initial' );
+
+  my $path = File::Spec->catfile( $repo->{ root }, 'tracked' );
+
+  # Linked after the commit, so git never sees the second name.
+  link $path, File::Spec->catfile( $repo->{ root }, 'untracked' )
+    or plan skip_all => "hardlinks unsupported: $!";
+
+  chmod 0640, $path;
+
+  run_script( $repo, ['--save'] );
+
+  my $record = by_name( note_hash( $repo ) )->{ tracked };
+
+  is $record->{ nlink }, 2, 'the link count is recorded as 2';
+  is scalar @{ $record->{ name } }, 1, 'only the tracked name is in the note';
+  is $record->{ type }, 'RF', 'one name and no sibling means an ordinary file';
+
+  chmod 0600, $path;
+
+  my $result = run_script( $repo, ['--set'] );
+
+  is $result->{ exit }, 0, '--set exits 0';
+
+  unlike $result->{ stderr }, qr/No linked files/,
+    'the restore does not fall into its hardlink guard';
+
+  is sprintf( '%04o', ( stat $path )[2] & 07777 ), '0640',
+    'and the mode is restored rather than skipped';
+
+};
+
 done_testing();

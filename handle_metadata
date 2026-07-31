@@ -375,12 +375,26 @@ sub get_metadata_from_system {
       ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
       my $ftype = ( $st->mode & 0170000 ) >> 12;
 
+      # HL means "this record already holds another name for the same inode",
+      # which is the only thing the restore can act on: it relinks every name
+      # after the first back to it. A record with a single name and nlink > 1
+      # -- the file's other links are outside the repository, or untracked --
+      # is an ordinary file as far as we are concerned.
+      #
+      # The test was `$inode != {}`, which compares the address of the record
+      # against that of a fresh anonymous hash and so was always true. Every
+      # such file was typed HL, and the restore then hit its own "how did you
+      # get here?!" guard and skipped the file outright: no mode, no owner, no
+      # timestamps, no attributes.
+
+      my $seen_this_inode = keys %{ $inode };
+
       $inode->{ type }
-        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                 ? 'CF'
-        : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $inode != {} ) ? 'HL'
-        : S_ISDIR( $st->mode )                                         ? 'DIR'
-        : S_ISLNK( $st->mode )                                         ? 'SL'
-        :                                                                'RF';
+        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                      ? 'CF'
+        : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $seen_this_inode )  ? 'HL'
+        : S_ISDIR( $st->mode )                                              ? 'DIR'
+        : S_ISLNK( $st->mode )                                              ? 'SL'
+        :                                                                     'RF';
 
       $inode->{ $_ } = $st->$_ for qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks );
 

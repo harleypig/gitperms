@@ -120,24 +120,17 @@ subtest '--quiet' => sub {
 
 };
 
-subtest 'the SELinux probe runs unconditionally' => sub {
+subtest 'the SELinux probe is silent' => sub {
 
-  # $se_enforcing is filled by `cat /selinux/enforce` at startup, before any
-  # option is parsed. On a system without that path -- which is every current
-  # distribution, they moved it to /sys/fs/selinux/enforce -- cat's complaint
-  # is emitted on every single invocation, including under --quiet. Issue #7.
+  # Issue #7. $se_enforcing was filled by `cat /selinux/enforce` at startup,
+  # before any option is parsed. No current distribution has that path -- the
+  # selinuxfs moved under /sys/fs -- so every single invocation forked a cat
+  # that printed a complaint, under --quiet as much as without it.
 
   my $result = run_script( $repo, [ '--save', '--force', '--quiet' ] );
 
-  SKIP: {
-
-    skip '/selinux/enforce exists on this host', 1
-      if -e '/selinux/enforce';
-
-    like $result->{ stderr }, qr{/selinux/enforce},
-      '[#7] the missing /selinux/enforce is reported on stderr even under --quiet';
-
-  }
+  unlike $result->{ stderr }, qr/selinux/i,
+    '[#7] a host without the probe path is not reported on stderr';
 
   is $result->{ exit }, 0, 'the probe does not stop the run';
 

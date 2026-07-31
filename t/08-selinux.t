@@ -62,6 +62,56 @@ sub restor_ctx_with {
 }
 
 #-------------------------------------------------------------------------------
+# A pseudo-file standing in for /sys/fs/selinux/enforce.
+
+sub enforce_file {
+
+  my ( $name, $content ) = @_;
+
+  my $path = File::Spec->catfile( $tmp, $name );
+
+  open my $fh, '>', $path or die "create $path: $!";
+  print { $fh } $content;
+  close $fh or die "close $path: $!";
+
+  return $path;
+
+}
+
+sub enforcing_with {
+
+  my ( @paths ) = @_;
+
+  no warnings 'once';  ## no critic ( TestingAndDebugging::ProhibitNoWarnings )
+  local @GitPerms::Script::SELINUX_ENFORCE = @paths;
+
+  return $pkg->can( 'selinux_enforcing' )->();
+
+}
+
+#-------------------------------------------------------------------------------
+
+subtest 'the enforcing state is read from the first path that opens' => sub {
+
+  # Issue #7. The probe was `qx/cat \/selinux\/enforce/` -- one path, which no
+  # current distribution has, so it forked a cat that complained on every run
+  # and always answered false.
+
+  my $missing = File::Spec->catfile( $tmp, 'no-such-selinux' );
+
+  ok !enforcing_with( $missing ), 'a path that does not exist answers no';
+  ok !enforcing_with(),           'and so does having no path to try at all';
+
+  ok enforcing_with( enforce_file( 'enforce-on', "1\n" ) ), 'a file holding 1 answers yes';
+
+  # The reason chomping matters: "0\n" is a true string in perl, so an
+  # SELinux system that was not enforcing would have read as one that was.
+  ok !enforcing_with( enforce_file( 'enforce-off', "0\n" ) ), 'a file holding 0 answers no';
+
+  ok enforcing_with( $missing, enforce_file( 'enforce-fallback', "1\n" ) ),
+    'a missing first path falls through to the second';
+
+};
 
 subtest 'the restore is skipped entirely when SELinux is not enforcing' => sub {
 

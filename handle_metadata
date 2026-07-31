@@ -1,36 +1,73 @@
-#! /usr/bin/perl
+#!/usr/bin/env perl
 
 ## no critic qw( ValuesAndExpressions::ProhibitAccessOfPrivateData ValuesAndExpressions::ProhibitLeadingZeros )
 ## no critic qw( Lax::ProhibitLeadingZeros::ExceptChmod ErrorHandling::RequireCarping Bangs::ProhibitNumberedNames )
 ## no critic qw( ValuesAndExpressions::RequireQuotedHeredocTerminator ValuesAndExpressions::RestrictLongStrings )
 ## no critic qw( ValuesAndExpressions::ProhibitInterpolationOfLiterals ValuesAndExpressions::ProhibitMagicNumbers )
 
-use 5.006;
+use 5.014;
 use strict;
 use warnings;
 
-use Fcntl qw( :mode S_ISDIR  S_ISLNK);
+use Fcntl      qw( :mode O_NONBLOCK O_RDONLY S_ISDIR S_ISLNK );
 use File::Spec ();
 use File::stat;  # overrides perl's stat and lstat
 use File::Temp 'tempfile';
-use File::Touch;
-use File::Basename;
 use Cwd 'abs_path';
 use Getopt::Long;
-use IPC::Run3::Simple;
-use Linux::Ext2::Attributes 'set_attrs';
-use POSIX;
-use Term::ReadKey;
-use Unix::Mknod;
-use YAML::Syck;
+use IO::Select ();
+use IPC::Open3 'open3';
+use JSON::PP ();
+use Symbol 'gensym';
+use POSIX 'mkfifo';
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
 
-$ENV{GIT_DIR} = abs_path(dirname($0).'/../');
-$ENV{GIT_WORK_TREE} = qx/git config --get core.worktree/;
-chomp $ENV{GIT_WORK_TREE};
+# The ext2 attribute ioctls are FS_IOC_GETFLAGS = _IOR( 'f', 1, long ) and
+# FS_IOC_SETFLAGS = _IOW( 'f', 2, long ). An ioctl number encodes the size of
+# its argument, so both values depend on sizeof(long) -- 0x80086601/0x40086602
+# on a 64-bit build, 0x80046601/0x40046602 on a 32-bit one. Derive them from
+# the running perl's long instead of hardcoding either variant.
+#
+#   direction << 30 | size << 16 | type << 8 | number   (asm-generic/ioctl.h)
+#   direction: _IOC_WRITE = 1, _IOC_READ = 2
 
-my $topdir = get_toplevel();
+use constant LONG_SIZE => length pack 'L!', 0;
+
+use constant {
+  FS_IOC_GETFLAGS => ( 2 << 30 ) | ( LONG_SIZE() << 16 ) | ( ord( 'f' ) << 8 ) | 1,
+  FS_IOC_SETFLAGS => ( 1 << 30 ) | ( LONG_SIZE() << 16 ) | ( ord( 'f' ) << 8 ) | 2,
+};
+
+# Attribute bits the kernel reports but will not accept back from userspace
+# (linux/fs.h). They are masked out of a saved snapshot and taken from the
+# file itself when restoring, which is what Linux::Ext2::Attributes' strip()
+# and set_attrs() did.
+
+use constant {
+  FS_DIRTY_FL     => 0x00000100,  # compression: dirty
+  FS_NOCOMP_FL    => 0x00000400,  # compression: do not compress
+  FS_ECOMPR_FL    => 0x00000800,  # compression: compression error
+  FS_INDEX_FL     => 0x00001000,  # hash-indexed directory
+  FS_HUGE_FILE_FL => 0x00040000,  # ext4: huge file
+  FS_EXTENT_FL    => 0x00080000,  # ext4: inode uses extents
+};
+
+use constant FS_READONLY_FLAGS => FS_DIRTY_FL | FS_NOCOMP_FL | FS_ECOMPR_FL | FS_INDEX_FL | FS_HUGE_FILE_FL | FS_EXTENT_FL;
+
+# gitperms may be installed anywhere -- a linked worktree's .git is a file, a
+# submodule's is a pointer, and a copy on PATH has no repository above it at
+# all -- so ask git where the repository is instead of deriving it from this
+# script's own path. Resolve both before exporting either: with GIT_DIR set
+# and no work tree, git answers --show-toplevel with the current directory.
+
+my $git_dir = get_git_dir();
+my $topdir  = get_toplevel();
+
+$ENV{ GIT_DIR } = $git_dir;
+
+$ENV{ GIT_WORK_TREE } = $topdir
+  if length $topdir;
 
 chdir $topdir
   or die "Unable to change to git top level directory: $!\n";
@@ -73,10 +110,10 @@ die "--save and --set are mutually exclusive\n"
 my %metadata;
 
 # Get all files git knows about
-run3( { cmd => [qw( git ls-tree -r -t HEAD )], stdout => \my @files } );
+my @files = split /\n/, ( run_cmd( qw( git ls-tree -r -t HEAD ) ) )[0];
 
 # Get unstaged files so we can ignore them
-run3( { cmd => [qw( git status --porcelain --untracked-files=no )], stdout => \my @ignore } );
+my @ignore = split /\n/, ( run_cmd( qw( git status --porcelain --untracked-files=no ) ) )[0];
 
 my %ignore; @ignore{ grep { s/^\s\S\s// } @ignore } = undef;
 
@@ -105,11 +142,91 @@ exit 0;
 
 ################################################################################################
 
+# Run a command with no shell involved, capturing its stdout and stderr
+# separately. Returns ( $stdout, $stderr, $syserr ) with one trailing newline
+# chomped from each stream, where $syserr is the raw $? of the finished child
+# -- or -1 when the command could not be spawned at all, in which case the
+# reason is returned as $stderr.
+
+sub run_cmd {
+
+  my @cmd = @_;
+
+  my ( $child_in, $child_out );
+  my $child_err = gensym;
+
+  my $pid = eval { open3 $child_in, $child_out, $child_err, @cmd };
+
+  return ( q{}, $@, -1 )
+    if ! $pid;
+
+  # Nothing here feeds a command on stdin, and an open pipe would hang any
+  # child that tried to read one.
+  close $child_in;
+
+  my ( $out, $err ) = ( q{}, q{} );
+
+  # Read whichever pipe has data. Draining one to EOF first deadlocks as soon
+  # as the other fills its pipe buffer, which a large `git ls-tree` easily
+  # does.
+  my %buffer_for = ( fileno $child_out => \$out, fileno $child_err => \$err );
+
+  my $select = IO::Select->new( $child_out, $child_err );
+
+  while ( my @ready = $select->can_read ) {
+
+    for my $fh ( @ready ) {
+
+      my $bytes = sysread $fh, my $buf, 8192;
+
+      if ( ! $bytes ) {
+
+        $select->remove( $fh );
+        close $fh;
+        next;
+
+      }
+
+      ${ $buffer_for{ fileno $fh } } .= $buf;
+
+    }
+  } ## end while ( my @ready = ...)
+
+  waitpid $pid, 0;
+
+  my $syserr = $?;
+
+  chomp $out;
+  chomp $err;
+
+  return ( $out, $err, $syserr );
+
+} ## end sub run_cmd
+
+sub get_git_dir {
+
+  my ( $git_dir, $err, $syserr ) = run_cmd( qw( git rev-parse --git-dir ) );
+
+  die "System error: $syserr\n$err\n"
+    if $syserr;
+
+  die "Unable to get git directory: $err\n"
+    if $err;
+
+  # git answers with a path relative to the current directory whenever it can,
+  # and the caller is about to chdir to the top level.
+  my $abs_git_dir = abs_path( $git_dir )
+    or die "Unable to resolve git directory '$git_dir': $!\n";
+
+  return $abs_git_dir;
+
+} ## end sub get_git_dir
+
 sub get_toplevel {
 
-  my ( $toplevel, $err, $syserr ) = run3( [qw( git rev-parse --show-toplevel )] );
+  my ( $toplevel, $err, $syserr ) = run_cmd( qw( git rev-parse --show-toplevel ) );
 
-  die "System error: $syserr\n"
+  die "System error: $syserr\n$err\n"
     if $syserr;
 
   die "Unable to get top level directory: $err\n"
@@ -138,11 +255,11 @@ sub get_metadata_from_system {
       my $ftype = ( $st->mode & 0170000 ) >> 12;
 
       $inode->{ type }
-        = ( $st->rdev || $ftype == 1 || $ftype == 12 ) ? 'CF'
+        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                 ? 'CF'
         : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $inode != {} ) ? 'HL'
-        : S_ISDIR( $st->mode ) ? 'DIR'
-        : S_ISLNK( $st->mode ) ? 'SL'
-        :                        'RF';
+        : S_ISDIR( $st->mode )                                         ? 'DIR'
+        : S_ISLNK( $st->mode )                                         ? 'SL'
+        :                                                                'RF';
 
       $inode->{ $_ } = $st->$_ for qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks );
 
@@ -150,10 +267,11 @@ sub get_metadata_from_system {
 
       push @{ $inode->{ name } }, $file;
 
-      if ( my $attributes = Linux::Ext2::Attributes->load( $file ) ) {
+      my $attributes = get_file_flags( $file );
 
-        $attributes = $attributes->strip;
-        $inode->{ extnd_attr } = $attributes->flags;
+      if ( defined $attributes ) {
+
+        $inode->{ extnd_attr } = $attributes & ~FS_READONLY_FLAGS;
 
       } else {
 
@@ -229,9 +347,7 @@ sub set_metadata_in_system { ## no critic qw( Subroutines::ProhibitExcessComplex
         }
       } elsif ( $attr->{ type } eq 'CF' ) {
 
-        ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
-        ( Unix::Mknod::mknod( $name, $attr->{ mode }, $attr->{ rdev } ) == -1 )
-          && warn "Problem making special file $name: $!\n";
+        make_special_file( $name, $attr->{ mode }, $attr->{ rdev } );
 
       } elsif ( $attr->{ type } eq 'DIR' ) {
 
@@ -279,25 +395,31 @@ sub set_note {
 
   my ( $fh, $filename ) = tempfile( unlink => 1 );
 
-  print $fh Dump( \%metadata );
+  # canonical keeps the key order stable so successive notes diff cleanly;
+  # pretty keeps the note readable through `git notes show`.
+  print { $fh } JSON::PP->new->utf8->canonical->pretty->encode( \%metadata );
+
+  # git reads the file itself, so the buffer has to reach disk first.
+  close $fh
+    or warn "Unable to write the note to $filename: $!\n";
 
   my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( add HEAD -F ), $filename );
 
   push @cmd, '--force' if defined $force;
 
-  my ( $out, $err ) = run3( \@cmd );
+  my ( $out, $err ) = run_cmd( @cmd );
   ! defined $quiet && warn "$out\n$err" if $err;
 
   return;
 
-}
+} ## end sub set_note
 
 sub get_note {
 
   my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
-  my ( $out, $err ) = run3( \@cmd );
+  my ( $out, $err ) = run_cmd( @cmd );
 
-  if ($err) {
+  if ( $err ) {
     if ( $err =~ /No note found for object/ ) {
 
       if ( defined $create_on_missing ) {
@@ -328,7 +450,7 @@ sub get_note {
 
         return;
 
-      }
+      } ## end else [ if ( defined $create_on_missing)]
 
     } else {
 
@@ -339,7 +461,7 @@ sub get_note {
 
   } else {
 
-    %metadata = %{ Load( "$out\n" ) };
+    %metadata = %{ JSON::PP->new->utf8->decode( $out ) };
 
     return 1;
   }
@@ -400,9 +522,7 @@ sub touch_file {
 
     ! defined $quiet && warn "touch -a $atime -m $mtime @files\n";
 
-    my $t = File::Touch->new( atime => $atime, mtime => $mtime, no_create => 1 );
-
-    my $touched = $t->touch( @files );
+    my $touched = utime $atime, $mtime, @files;
 
     warn "Unable to touch one or more files: $!\n"
       unless $touched == @files;
@@ -419,14 +539,122 @@ sub extnd_attr {
 
   while ( my ( $f, $x ) = each %$extnd_attr ) { ## no critic qw( References::ProhibitDoubleSigils )
 
+    # Nothing was recorded for this file, so there is nothing to restore.
+    next if ! defined $x;
+
     ! defined $quiet && warn "chattr $x $f\n";
 
-    set_attrs( $f, $x )
+    set_file_flags( $f, $x )
       or warn "Unable to set extended attributes on $f\n";
 
   }
 
   return;
+
+} ## end sub extnd_attr
+
+# Recreate a fifo, character device, or block device. Only root can make the
+# device nodes, so the mknod(1) call is the root-only path; a fifo goes
+# through POSIX::mkfifo, which needs no privilege and no external command.
+#
+# The mode is left to the caller: every name handled here is also queued for
+# chmod, which runs immediately afterwards.
+
+sub make_special_file {
+
+  my ( $name, $mode, $rdev ) = @_;
+
+  if ( S_ISFIFO( $mode ) ) {
+
+    mkfifo( $name, $mode & 07777 )
+      or warn "Problem making fifo $name: $!\n";
+
+    return;
+
+  }
+
+  my $type
+    = S_ISCHR( $mode ) ? 'c'
+    : S_ISBLK( $mode ) ? 'b'
+    :                    undef;
+
+  if ( ! defined $type ) {
+
+    warn "Unknown special file type for $name, skipping\n";
+    return;
+
+  }
+
+  # glibc splits a dev_t's major and minor numbers across the value rather
+  # than storing them contiguously (sys/sysmacros.h), and that is the encoding
+  # perl's stat reports.
+  my $major = ( ( $rdev >> 8 ) & 0xfff ) | ( ( $rdev >> 32 ) & ~0xfff );
+  my $minor = ( $rdev & 0xff ) | ( ( $rdev >> 12 ) & ~0xff );
+
+  my ( $out, $err, $syserr ) = run_cmd( 'mknod', '--', $name, $type, $major, $minor );
+
+  warn "Problem making special file $name: $err\n"
+    if $syserr;
+
+  return;
+
+} ## end sub make_special_file
+
+# Read the ext2 attribute flags of a file, or undef if they cannot be read.
+# Opening non-blocking keeps a fifo from stalling the whole run, and matches
+# what lsattr(1) does.
+
+sub get_file_flags {
+
+  my ( $file ) = @_;
+
+  sysopen my $fh, $file, O_RDONLY | O_NONBLOCK
+    or return;
+
+  my $flags = read_flags( $fh );
+
+  close $fh;
+
+  return $flags;
+
+}
+
+# Restore the recorded flags, keeping the bits the kernel will not accept from
+# userspace as the file already has them.
+
+sub set_file_flags {
+
+  my ( $file, $flags ) = @_;
+
+  sysopen my $fh, $file, O_RDONLY | O_NONBLOCK
+    or return;
+
+  my $current = read_flags( $fh );
+
+  return if ! defined $current;
+
+  my $wanted = ( $current & FS_READONLY_FLAGS ) | ( $flags & ~FS_READONLY_FLAGS );
+  my $packed = pack 'L!', $wanted;
+
+  my $set = ioctl $fh, FS_IOC_SETFLAGS, $packed;
+
+  close $fh;
+
+  return $set;
+
+} ## end sub set_file_flags
+
+sub read_flags {
+
+  my ( $fh ) = @_;
+
+  # The ioctl is declared to take a long, so the buffer is sized to one, but
+  # the kernel exchanges an int through it.
+  my $packed = pack 'L!', 0;
+
+  return if ! ioctl $fh, FS_IOC_GETFLAGS, $packed;
+
+  return scalar unpack 'L!', $packed;
 
 }
 
@@ -435,12 +663,12 @@ sub restor_ctx {
 
   return if not $se_enforcing;
 
-  my $top = $topdir =~ m/\/$/ ? $topdir : $topdir."/";
+  my $top = $topdir =~ m/\/$/ ? $topdir : $topdir . "/";
 
   open RESTORCON, "|restorecon -f- -v" || warn "unable to execute restorecon";
-  foreach (@$restor_ctx) {
-    ! defined $quiet && warn "restorecon ". $top . $_ . "\n";
-    print RESTORCON "". $top . $_ . "\n";
+  foreach ( @$restor_ctx ) {
+    ! defined $quiet && warn "restorecon " . $top . $_ . "\n";
+    print RESTORCON "" . $top . $_ . "\n";
   }
   close RESTORCON;
 

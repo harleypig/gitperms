@@ -1,0 +1,82 @@
+name: CI
+
+# Only what exists is wired. Tier 2 (the perl version matrix) and tier 3 (the
+# privileged container) have runners but no tests yet, so they get no job: a
+# job that always passes would be worse than none, because the branch ruleset
+# could then require a check that proves nothing.
+#
+# Check contexts produced by this workflow -- these are the exact strings the
+# `required_status_checks` ruleset needs (see issue #10):
+#
+#     perlcritic
+#     tier1
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+
+  perlcritic:
+    name: perlcritic
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      # The operator publishes this image, so the job neither builds Perl::Critic
+      # nor pins a CPAN version here. There is no :latest tag; the version is
+      # explicit on purpose.
+      #
+      # Invoked with `docker run` rather than as a job `container:` because a
+      # job container has to carry Node.js for actions/checkout to run inside
+      # it, and this image does not.
+      - name: perlcritic --severity 4 (differential, against t/perlcritic.baseline)
+        env:
+          IMAGE: ghcr.io/harleypig/perlcritic:1.156
+        run: |
+          cat > "$RUNNER_TEMP/perlcritic" <<EOF
+          #!/bin/sh
+          exec docker run --rm --volume "$GITHUB_WORKSPACE:/mnt" --workdir /mnt \\
+            --entrypoint perlcritic "\$IMAGE" "\$@"
+          EOF
+          chmod +x "$RUNNER_TEMP/perlcritic"
+          PERLCRITIC="$RUNNER_TEMP/perlcritic" ./t/perlcritic.sh
+
+  tier1:
+    name: tier1
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      # gitperms depends on nothing outside core perl, which is the whole point
+      # of the modernisation. Recording the versions the suite actually ran
+      # against makes a version-specific failure readable from the log alone.
+      - name: Record the toolchain
+        run: |
+          perl -V:version -V:archname
+          prove --version
+          git --version
+          lsattr -V 2>&1 | head -1 || true
+
+      - name: Refuse any non-core dependency
+        run: |
+          # t/00-compile.t asserts this properly; this is the cheap early
+          # signal, before a cpan module could be installed by a later step.
+          ! grep -nE '^\s*use\s+(Linux::|IPC::Run3|File::Touch|Unix::Mknod|YAML|Term::ReadKey)' handle_metadata
+
+      - name: Tier 1 (host, unprivileged)
+        run: ./run-tests 1

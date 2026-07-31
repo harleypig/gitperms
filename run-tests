@@ -1,0 +1,308 @@
+#!/bin/sh
+#
+# Single entry point for the gitperms test suite.
+#
+# The suite is split into three tiers by what the host has to provide:
+#
+#   1  host, unprivileged     - runs anywhere perl does; no container
+#   2  container, unprivileged - tier 1 across a matrix of perl versions
+#   3  container, privileged   - operations unsafe on a working system:
+#                                chown to arbitrary uids, device nodes,
+#                                FS_IOC_SETFLAGS on a real ext4 filesystem
+#
+# With no arguments every tier that can run does; a tier whose prerequisites
+# are missing reports SKIP, never FAIL, so a contributor with nothing but perl
+# still gets a useful result. Name tiers explicitly to override that.
+#
+# A tier runner signals its outcome through its exit status:
+#
+#   0   pass
+#   77  skip (prerequisites absent, or nothing implemented yet)
+#   *   fail
+
+set -u
+
+##############################################################################
+# Settings
+
+self=$(command -v -- "$0" || echo "$0")
+here=$(CDPATH='' cd -- "$(dirname -- "$self")" && pwd)
+
+SKIP_STATUS=77
+
+tier1_label='host, unprivileged'
+tier2_label='container, perl version matrix'
+tier3_label='container, privileged'
+
+#-----------------------------------------------------------------------------
+
+usage() {
+
+  cat <<EOF
+usage: run-tests [options] [tier ...]
+
+  tier                 1, 2, 3, or 'all'. Default: every available tier.
+
+  --list               Report each tier's availability and exit.
+  --help               This screen.
+
+Anything after '--' is passed through to the tier runners.
+
+Tiers:
+
+  1  $tier1_label
+  2  $tier2_label
+  3  $tier3_label
+
+A tier whose prerequisites are missing is reported as SKIP, not FAIL.
+EOF
+
+}
+
+##############################################################################
+# Availability probes
+#
+# Each prints a reason on stdout and returns non-zero when the tier cannot
+# run; it prints nothing and returns 0 when it can.
+
+#-----------------------------------------------------------------------------
+
+tier1_available() {
+
+  if ! command -v perl >/dev/null 2>&1; then
+    echo 'perl is not installed'
+    return 1
+  fi
+
+  if ! command -v prove >/dev/null 2>&1; then
+    echo 'prove is not installed (Test::Harness is core; check the perl install)'
+    return 1
+  fi
+
+  return 0
+
+}
+
+#-----------------------------------------------------------------------------
+
+docker_available() {
+
+  command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
+
+}
+
+#-----------------------------------------------------------------------------
+
+tier2_available() {
+
+  if ! docker_available; then
+    echo 'docker is not available'
+    return 1
+  fi
+
+  return 0
+
+}
+
+#-----------------------------------------------------------------------------
+
+tier3_available() {
+
+  if ! docker_available; then
+    echo 'docker is not available'
+    return 1
+  fi
+
+  # FS_IOC_SETFLAGS needs a real ext4 filesystem, which means a loopback image
+  # mounted inside the container, which means CAP_SYS_ADMIN and a loop device.
+  if [ ! -e /dev/loop-control ]; then
+    echo 'no /dev/loop-control, so a loopback ext4 image cannot be mounted'
+    return 1
+  fi
+
+  return 0
+
+}
+
+##############################################################################
+# Tier runners
+
+#-----------------------------------------------------------------------------
+
+run_tier1() {
+
+  # -I t/lib rather than -l: the helpers live beside the tests, not in a
+  # distribution lib/.
+  ( cd -- "$here" && prove -I t/lib "$@" t )
+
+}
+
+#-----------------------------------------------------------------------------
+
+run_tier2() {
+
+  "$here/t/tier2/run.sh" "$@"
+
+}
+
+#-----------------------------------------------------------------------------
+
+run_tier3() {
+
+  "$here/t/tier3/run.sh" "$@"
+
+}
+
+##############################################################################
+# Driver
+
+#-----------------------------------------------------------------------------
+
+label_for() {
+
+  case "$1" in
+    1) echo "$tier1_label" ;;
+    2) echo "$tier2_label" ;;
+    3) echo "$tier3_label" ;;
+  esac
+
+}
+
+#-----------------------------------------------------------------------------
+# Echoes the reason a tier is unavailable, or nothing when it is available.
+
+availability_for() {
+
+  case "$1" in
+    1) tier1_available ;;
+    2) tier2_available ;;
+    3) tier3_available ;;
+  esac
+
+}
+
+#-----------------------------------------------------------------------------
+
+list_tiers() {
+
+  for tier in 1 2 3; do
+
+    reason=$(availability_for "$tier")
+
+    if [ -z "$reason" ]; then
+      printf 'tier %s  %-32s available\n' "$tier" "$(label_for "$tier")"
+    else
+      printf 'tier %s  %-32s unavailable: %s\n' "$tier" "$(label_for "$tier")" "$reason"
+    fi
+
+  done
+
+}
+
+#-----------------------------------------------------------------------------
+# Run one tier. Records the outcome in $results and returns non-zero only on a
+# genuine failure.
+
+run_tier() {
+
+  tier=$1
+  shift
+
+  reason=$(availability_for "$tier")
+
+  if [ -n "$reason" ]; then
+
+    printf '\n=== tier %s (%s): SKIP -- %s\n' "$tier" "$(label_for "$tier")" "$reason"
+    results="${results}tier ${tier}  SKIP  ${reason}
+"
+    return 0
+
+  fi
+
+  printf '\n=== tier %s (%s)\n\n' "$tier" "$(label_for "$tier")"
+
+  "run_tier${tier}" "$@"
+  status=$?
+
+  if [ "$status" -eq 0 ]; then
+    results="${results}tier ${tier}  PASS
+"
+    return 0
+  fi
+
+  if [ "$status" -eq "$SKIP_STATUS" ]; then
+    results="${results}tier ${tier}  SKIP  runner reported nothing to do
+"
+    return 0
+  fi
+
+  results="${results}tier ${tier}  FAIL  exit ${status}
+"
+
+  return 1
+
+}
+
+##############################################################################
+# Main
+
+wanted=''
+passthrough=''
+
+while [ $# -gt 0 ]; do
+
+  case "$1" in
+
+    --help | -h )
+      usage
+      exit 0
+      ;;
+
+    --list )
+      list_tiers
+      exit 0
+      ;;
+
+    -- )
+      shift
+      passthrough="$*"
+      break
+      ;;
+
+    1 | 2 | 3 )
+      wanted="$wanted $1"
+      ;;
+
+    all )
+      wanted='1 2 3'
+      ;;
+
+    * )
+      echo "run-tests: unknown argument '$1'" >&2
+      usage >&2
+      exit 2
+      ;;
+
+  esac
+
+  shift
+
+done
+
+[ -n "$wanted" ] || wanted='1 2 3'
+
+results=''
+failed=0
+
+for tier in $wanted; do
+
+  # shellcheck disable=SC2086
+  run_tier "$tier" $passthrough || failed=1
+
+done
+
+printf '\n===============================================================\n'
+printf '%s' "$results"
+printf '===============================================================\n'
+
+exit "$failed"

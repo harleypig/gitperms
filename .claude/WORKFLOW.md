@@ -42,9 +42,18 @@ JSON is kept at `.github/rulesets/protect-master.json`. Currently active:
 - `pull_request` — PR required; 0 approvals, review threads must resolve,
   **squash-only** merges.
 
-**`required_status_checks` is deliberately absent.** The repo has no CI yet,
-and a required check that never reports blocks every merge. The checks are
-added once CI exists, using the context names CI actually produces.
+**`required_status_checks` is deliberately absent.** It is added by
+[#10](https://github.com/harleypig/gitperms/issues/10), using the context
+names CI actually produces. As of the CI workflow (`.github/workflows/ci.yml`)
+those are exactly:
+
+- `perlcritic`
+- `tier1`
+
+Both are job names, which is what GitHub Actions reports as the check context.
+Tier 2 (the Perl version matrix) and tier 3 (the privileged container) have
+runners but no tests yet and therefore no job, so they contribute **no**
+context — do not add one for them until they do.
 
 Layer 2 (the `no-commit-to-branch` pre-commit hook) and therefore layer 3 (the
 edit-time `branch-protection.py` guard, which activates only where layer 2 is

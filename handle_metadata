@@ -825,18 +825,34 @@ sub read_flags {
 }
 
 sub restor_ctx {
+
   my ( $restor_ctx ) = @_;
 
-  return if not $se_enforcing;
+  return if ! $se_enforcing;
 
-  my $top = $topdir =~ m/\/$/ ? $topdir : $topdir . "/";
+  my $top = $topdir =~ m{/$} ? $topdir : $topdir . '/';
 
-  open RESTORCON, "|restorecon -f- -v" || warn "unable to execute restorecon";
-  foreach ( @$restor_ctx ) {
-    ! defined $quiet && warn "restorecon " . $top . $_ . "\n";
-    print RESTORCON "" . $top . $_ . "\n";
+  # `open FH, "|cmd" || warn ...` parsed as open( FH, ( "|cmd" || warn ... ) ):
+  # || binds tighter than the list operator, so the string was simply truthy
+  # and the warning could never fire. `or` binds looser, which is the whole
+  # reason it exists. The list form also keeps the shell out of the command.
+  open my $restorecon, '|-', 'restorecon', '-f-', '-v'
+    or do { warn "Unable to execute restorecon: $!\n"; return };
+
+  for my $file ( @$restor_ctx ) {
+
+    ! defined $quiet && warn "restorecon $top$file\n";
+
+    print { $restorecon } "$top$file\n";
+
   }
-  close RESTORCON;
+
+  # A command on the far end of a pipe is only reaped when the pipe closes, so
+  # this is where its exit status turns up -- open reports nothing but its own
+  # failure to start the thing.
+  close $restorecon
+    or warn sprintf "restorecon exited %d\n", $? >> 8;
 
   return;
-}
+
+} ## end sub restor_ctx

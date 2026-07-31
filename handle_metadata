@@ -136,9 +136,9 @@ my @ignore = split /\0/, ( run_cmd( qw( git status --porcelain -z --untracked-fi
 
 my %head_blob;
 
-for my $record ( @files ) {
+for my $entry ( @files ) {
 
-  my ( $sha1, $file ) = split_ls_tree( $record );
+  my ( $sha1, $file ) = split_ls_tree( $entry );
 
   $head_blob{ $file } = $sha1
     if defined $file;
@@ -304,9 +304,9 @@ sub describe_status {
 
 sub split_ls_tree {
 
-  my ( $record ) = @_;
+  my ( $entry ) = @_;
 
-  my ( $info, $file ) = split /\t/, $record, 2;
+  my ( $info, $file ) = split /\t/, $entry, 2;
 
   return
     if ! defined $file;

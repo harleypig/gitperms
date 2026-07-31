@@ -186,7 +186,7 @@ while ( defined( my $entry = shift @ignore ) ) {
   $ignore{ $source } = undef
     if defined $source;
 
-}
+} ## end while ( defined( my ...))
 
 if ( defined $save ) {
 
@@ -419,7 +419,7 @@ sub get_toplevel {
 
   return $toplevel;
 
-}
+} ## end sub get_toplevel
 
 sub get_metadata_from_system {
 
@@ -455,11 +455,11 @@ sub get_metadata_from_system {
       my $seen_this_inode = keys %{ $inode };
 
       $inode->{ type }
-        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                      ? 'CF'
-        : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $seen_this_inode )  ? 'HL'
-        : S_ISDIR( $st->mode )                                              ? 'DIR'
-        : S_ISLNK( $st->mode )                                              ? 'SL'
-        :                                                                     'RF';
+        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                     ? 'CF'
+        : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $seen_this_inode ) ? 'HL'
+        : S_ISDIR( $st->mode )                                             ? 'DIR'
+        : S_ISLNK( $st->mode )                                             ? 'SL'
+        :                                                                    'RF';
 
       $inode->{ $_ } = $st->$_ for qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks );
 
@@ -665,7 +665,7 @@ sub get_note {
 
     return;
 
-  }
+  } ## end elsif ( $exit == 1 )
 
   my ( $out, $show_err ) = run_cmd( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
 
@@ -708,7 +708,7 @@ sub names_to_bytes {
 
   return;
 
-} ## end sub names_to_bytes
+}
 
 sub chown_file {
 
@@ -911,7 +911,7 @@ sub restor_ctx {
 
   my $top = $topdir =~ m{/$} ? $topdir : $topdir . '/';
 
-  # `open FH, "|cmd" || warn ...` parsed as open( FH, ( "|cmd" || warn ... ) ):
+  # `open FH, "|cmd" || warn ...` parsed as open( FH, ("|cmd" || warn ...) ):
   # || binds tighter than the list operator, so the string was simply truthy
   # and the warning could never fire. `or` binds looser, which is the whole
   # reason it exists. The list form also keeps the shell out of the command.

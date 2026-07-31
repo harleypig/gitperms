@@ -145,16 +145,16 @@ subtest 'the ignore list also excludes deletions and both-column changes' => sub
 
 };
 
-subtest 'a file whose name git C-quotes is silently dropped' => sub {
+subtest 'a file whose name git would C-quote is still handled' => sub {
 
-  # `git ls-tree` C-quotes any path containing a double quote, a backslash, a
-  # control character, or (unless core.quotePath is false) a byte above 0x7f.
-  # The script never unquotes, so lstat is handed the *quoted* string, fails,
-  # and the file is skipped with a warning. Its metadata is never saved and
-  # never restored.
+  # Issue #18. `git ls-tree` C-quotes any path containing a double quote, a
+  # backslash, a control character, or (unless core.quotePath is false) a byte
+  # above 0x7f. The script never unquoted, so lstat was handed the *quoted*
+  # string, failed, and the file was skipped with a warning -- its metadata
+  # never saved and never restored, with --quiet hiding even the warning.
   #
-  # `git ls-tree -z` plus split /\0/ would fix both this and the equivalent
-  # problem in the ignore list.
+  # `git ls-tree -z` plus split /\0/ removes the quoting rather than undoing
+  # it, and covers the ignore list the same way.
 
   my $repo = new_repo();
 
@@ -179,6 +179,10 @@ subtest 'a file whose name git C-quotes is silently dropped' => sub {
     print { $fh } "x\n";
     close $fh;
 
+    # Explicit, so the restore below is measured against a known mode rather
+    # than whatever the ambient umask produced.
+    chmod 0644, $path;
+
   }
 
   commit_all( $repo, 'initial' );
@@ -189,27 +193,31 @@ subtest 'a file whose name git C-quotes is silently dropped' => sub {
 
   my $names = note_names( $repo );
 
-  # Names git passes through verbatim are handled correctly.
+  # Names git passes through verbatim.
   ok $names->{ $name{ $_ } }, "'$_' is recorded"
     for qw( plain space colon dash yaml_yes numeric );
 
-  # Names git quotes are not.
-  for my $label ( qw( dquote backslash utf8 newline ) ) {
+  # Names git would have quoted.
+  ok $names->{ $name{ $_ } }, "'$_' is recorded"
+    for qw( dquote backslash utf8 newline );
 
-    ok !$names->{ $name{ $label } },
-      "current behaviour: '$label' is missing from the note (git quoted the path)";
+  unlike $result->{ stderr }, qr/Problem getting stat on/,
+    'no path was handed to lstat in its quoted form';
 
-    like $result->{ stderr }, qr/Problem getting stat on/,
-      "...and the run warned about it"
-      if $label eq 'dquote';
+  # The restore side reads the same list, so it has to match the names back to
+  # their own entries rather than skipping them.
+  chmod 0600, File::Spec->catfile( $repo->{ root }, $_ ) for values %name;
 
-  }
+  my $set = run_script( $repo, [ '--set', '--quiet' ] );
 
-  TODO: {
-    local $TODO = 'git ls-tree C-quotes these paths; the script does not unquote them';
+  is $set->{ exit }, 0, '--set succeeded';
 
-    ok $names->{ $name{ $_ } }, "'$_' should be recorded"
-      for qw( dquote backslash utf8 newline );
+  for my $label ( sort keys %name ) {
+
+    my $mode = ( stat File::Spec->catfile( $repo->{ root }, $name{ $label } ) )[2] & 07777;
+
+    is sprintf( '%04o', $mode ), '0644', "'$label' was restored to its own mode";
+
   }
 
 };

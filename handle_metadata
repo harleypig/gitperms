@@ -109,11 +109,20 @@ die "--save and --set are mutually exclusive\n"
 
 my %metadata;
 
-# Get all files git knows about
-my @files = split /\n/, ( run_cmd( qw( git ls-tree -r -t HEAD ) ) )[0];
+# Get all files git knows about.
+#
+# -z is what makes the path usable: without it git C-quotes any path holding
+# a double quote, a backslash, a control character, or -- under the default
+# core.quotePath -- a byte above 0x7f, and the quoted string is not the name
+# lstat wants. NUL termination removes the quoting instead of asking us to
+# undo it, and it is also the only separator a filename cannot contain: a
+# newline is a legal character in one, so splitting on newlines is unsafe
+# even where nothing is quoted.
 
-# Get unstaged files so we can ignore them
-my @ignore = split /\n/, ( run_cmd( qw( git status --porcelain --untracked-files=no ) ) )[0];
+my @files = split /\0/, ( run_cmd( qw( git ls-tree -r -t -z HEAD ) ) )[0];
+
+# Get modified files so we can ignore them
+my @ignore = split /\0/, ( run_cmd( qw( git status --porcelain -z --untracked-files=no ) ) )[0];
 
 my %ignore; @ignore{ grep { s/^\s\S\s// } @ignore } = undef;
 
@@ -241,7 +250,14 @@ sub get_metadata_from_system {
 
   for my $f ( @files ) {
 
-    my ( $sha1, $file ) = $f =~ /^\d+\s\w+\s([[:xdigit:]]+)\s(.*)$/;
+    # "<mode> <type> <object>\t<path>". The tab is the only field separator,
+    # and everything after it is the path -- which may itself contain a
+    # newline, so it is taken by position rather than matched.
+    my ( $info, $file ) = split /\t/, $f, 2;
+
+    next if ! defined $file;
+
+    my $sha1 = ( split / /, $info )[2];
 
     next if exists $ignore{ $file };
 
@@ -463,10 +479,38 @@ sub get_note {
 
     %metadata = %{ JSON::PP->new->utf8->decode( $out ) };
 
+    names_to_bytes( \%metadata );
+
     return 1;
   }
 
 } ## end sub get_note
+
+# A path is a string of bytes, and every name in the note arrived as one --
+# git handed it over verbatim and lstat, chmod, and utime all want it back
+# that way. Decoding the note turns those bytes into characters, so a name
+# outside ASCII would otherwise be handed to the filesystem as its UTF-8
+# encoding and match nothing.
+#
+# A name that will not fit in bytes cannot have come from a path here, so it
+# is left as it is rather than made fatal in the middle of a restore.
+
+sub names_to_bytes {
+
+  my ( $metadata ) = @_;
+
+  for my $md ( values %$metadata ) { ## no critic qw( References::ProhibitDoubleSigils )
+
+    for my $inode ( values %$md ) { ## no critic qw( References::ProhibitDoubleSigils )
+
+      utf8::downgrade( $_, 1 ) for @{ $inode->{ name } || [] };
+
+    }
+  }
+
+  return;
+
+} ## end sub names_to_bytes
 
 sub chown_file {
 

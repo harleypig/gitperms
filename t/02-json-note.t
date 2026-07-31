@@ -214,6 +214,15 @@ SKIP: {
     is $back->{ abc123 }{ 99 }{ mode }, 33188, 'mode came back as a number';
     is $back->{ abc123 }{ 99 }{ chmod }, '0644', 'chmod came back as a string';
 
+    # Part of issue #18. A path is bytes, and decoding the note turns those
+    # bytes into characters -- perl then hands such a string to chmod/utime as
+    # its UTF-8 *encoding*, which is not the name on disk, so the restore
+    # silently misses every non-ASCII file. get_note puts the names back.
+    my $utf8_name = $back->{ abc123 }{ 99 }{ name }[2];
+
+    is $utf8_name, "caf\xc3\xa9", 'a non-ASCII name survives the round trip';
+    ok !utf8::is_utf8( $utf8_name ), '...as bytes, the way the filesystem takes it';
+
     # Restore uses these numerically; a stringified value would still work with
     # ==, so re-encode and inspect the representation.
     for my $field ( qw( mode uid gid rdev atime mtime extnd_attr ) ) {

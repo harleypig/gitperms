@@ -157,6 +157,39 @@ my $big = 256 * 1024;
 }
 
 #-------------------------------------------------------------------------------
+# Reporting that status to a person. $syserr is a wait(2) status, not an exit
+# code: get_git_dir and get_toplevel printed it raw, so git's exit 128 reached
+# the user as "System error: 32768".
+
+{
+  my $describe = $pkg->can( 'describe_status' )
+    or die "handle_metadata has no describe_status\n";
+
+  my ( undef, undef, $exited ) = $run_cmd->( $^X, '-e', 'exit 128' );
+
+  is $describe->( $exited ), 'exited 128', 'an exit status is reported as its high byte';
+
+  my ( undef, undef, $signalled ) = $run_cmd->( $^X, '-e', 'kill 9, $$; sleep 10' );
+
+  SKIP: {
+
+    skip 'the child was not killed by a signal on this host', 1
+      if !( $signalled & 127 );
+
+    is $describe->( $signalled ), 'was killed by signal 9',
+      'a signal is named as a signal, not folded into an exit code';
+
+  }
+
+  my ( undef, undef, $unspawnable ) = $run_cmd->( 'gitperms-no-such-command-exists' );
+
+  is $describe->( $unspawnable ), 'could not be run',
+    'run_cmd\'s -1 is not read as a status at all';
+
+  is $describe->( 0 ), 'exited 0', 'success is still describable';
+}
+
+#-------------------------------------------------------------------------------
 # No shell. run3 was called with a list and so is open3; a caller passing a
 # path containing shell metacharacters must not have them interpreted.
 

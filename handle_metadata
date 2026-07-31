@@ -274,6 +274,28 @@ sub run_cmd {
 
 } ## end sub run_cmd
 
+# Describe a wait(2) status the way a person reads it. $? is not an exit
+# code: the exit code is its high byte, and its low byte carries the signal
+# that killed the child instead -- so printing it raw reports git's exit 128
+# as 32768. run_cmd answers -1 when the command could not be started at all,
+# and returns the reason as its stderr.
+
+sub describe_status {
+
+  my ( $status ) = @_;
+
+  return 'could not be run'
+    if $status == -1;
+
+  my $signal = $status & 127;
+
+  return sprintf 'was killed by signal %d', $signal
+    if $signal;
+
+  return sprintf 'exited %d', $status >> 8;
+
+}
+
 # Split one `git ls-tree -z` record, "<mode> <type> <object>\t<path>", into
 # its object name and its path. The tab is the only field separator, and
 # everything after it is the path -- which may itself contain a newline, so
@@ -360,7 +382,7 @@ sub get_git_dir {
 
   my ( $git_dir, $err, $syserr ) = run_cmd( qw( git rev-parse --git-dir ) );
 
-  die "System error: $syserr\n$err\n"
+  die sprintf "System error: git rev-parse --git-dir %s\n%s\n", describe_status( $syserr ), $err
     if $syserr;
 
   die "Unable to get git directory: $err\n"
@@ -379,7 +401,7 @@ sub get_toplevel {
 
   my ( $toplevel, $err, $syserr ) = run_cmd( qw( git rev-parse --show-toplevel ) );
 
-  die "System error: $syserr\n$err\n"
+  die sprintf "System error: git rev-parse --show-toplevel %s\n%s\n", describe_status( $syserr ), $err
     if $syserr;
 
   die "Unable to get top level directory: $err\n"
@@ -908,7 +930,7 @@ sub restor_ctx {
   # this is where its exit status turns up -- open reports nothing but its own
   # failure to start the thing.
   close $restorecon
-    or warn sprintf "restorecon exited %d\n", $? >> 8;
+    or warn sprintf "restorecon %s\n", describe_status( $? );
 
   return;
 

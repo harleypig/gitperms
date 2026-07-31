@@ -204,6 +204,12 @@ subtest 'outside any repository' => sub {
 
   unlike $result->{ stdout }, qr/Done saving/, 'nothing was saved';
 
+  # $? is not an exit code -- the exit code is its high byte -- so the raw
+  # value reported git's exit 128 as 32768.
+  like $result->{ stderr }, qr/exited 128/, 'git\'s exit status is decoded';
+
+  unlike $result->{ stderr }, qr/\b32768\b/, 'and the raw wait status is not printed';
+
 };
 
 subtest 'from inside the git directory itself' => sub {

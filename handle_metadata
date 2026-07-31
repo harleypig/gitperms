@@ -124,12 +124,36 @@ my @files = split /\0/, ( run_cmd( qw( git ls-tree -r -t -z HEAD ) ) )[0];
 # Get modified files so we can ignore them
 my @ignore = split /\0/, ( run_cmd( qw( git status --porcelain -z --untracked-files=no ) ) )[0];
 
-# Each record is "XY <path>": the staged status in column 1, the worktree
-# status in column 2. A staged-only change is therefore "M  file" and one
-# changed in both is "MM file", neither of which has a space in column 1 --
-# so matching a shape that required one saw worktree changes alone and let
-# every staged change through. Whatever git reports in either column, the
-# file is mid-edit and its metadata is not ours to record or restore.
+# The blob HEAD holds for each path. `git status` says a file is modified
+# without saying whether its content or only its mode changed, and no status
+# format separates the two -- so the question is answered by hashing the file
+# on disk and comparing it with this.
+
+my %head_blob;
+
+for my $record ( @files ) {
+
+  my ( $sha1, $file ) = split_ls_tree( $record );
+
+  $head_blob{ $file } = $sha1
+    if defined $file;
+
+}
+
+# Each status record is "XY <path>": the staged status in column 1, the
+# worktree status in column 2. A staged-only change is therefore "M  file"
+# and one changed in both is "MM file", neither of which has a space in
+# column 1 -- so matching a shape that required one saw worktree changes
+# alone and let every staged change through.
+#
+# A file whose content is mid-edit is not ours to record or restore. Drift in
+# its *mode* is the opposite: it is the damage gitperms exists to repair, and
+# the executable bit -- the one mode bit git itself reports -- was the case
+# the ignore list used to decline. So a plain modification whose content
+# still matches HEAD stays off the list. Anything else git reports (a
+# deletion, rename, copy, addition, or unmerged path) is work in progress
+# whatever its mode, and so is a modification that changed content in either
+# column.
 #
 # A rename or copy is reported as "XY <to>" followed by a second record
 # holding the path it came from; both names belong to the same work in
@@ -142,8 +166,12 @@ while ( defined( my $entry = shift @ignore ) ) {
   next if length $entry < 4;
 
   my ( $x, $y ) = ( substr( $entry, 0, 1 ), substr( $entry, 1, 1 ) );
+  my $path = substr $entry, 3;
 
-  $ignore{ substr $entry, 3 } = undef;
+  my $modification_only = ! grep { $_ ne 'M' && $_ ne q{ } } $x, $y;
+
+  $ignore{ $path } = undef
+    if ! $modification_only || ! content_matches_head( $path, $head_blob{ $path } );
 
   next
     if $x ne 'R' && $x ne 'C' && $y ne 'R' && $y ne 'C';
@@ -241,6 +269,51 @@ sub run_cmd {
 
 } ## end sub run_cmd
 
+# Split one `git ls-tree -z` record, "<mode> <type> <object>\t<path>", into
+# its object name and its path. The tab is the only field separator, and
+# everything after it is the path -- which may itself contain a newline, so
+# it is taken by position rather than matched. Returns an empty list for a
+# record with no tab at all.
+
+sub split_ls_tree {
+
+  my ( $record ) = @_;
+
+  my ( $info, $file ) = split /\t/, $record, 2;
+
+  return
+    if ! defined $file;
+
+  return ( ( split / /, $info )[2], $file );
+
+}
+
+# Whether the file on disk still holds the content HEAD recorded for it,
+# which is what separates a file whose mode has drifted -- the damage
+# gitperms exists to repair -- from one that is being edited.
+#
+# hash-object applies the same filters git would, so a repository using
+# clean/smudge or end-of-line conversion is compared on the same terms git
+# compares it. Anything that cannot be hashed (a path not in HEAD, an
+# unreadable file, a symlink, whose blob is its target text rather than the
+# content hash-object reads) answers no, which leaves the file ignored.
+
+sub content_matches_head {
+
+  my ( $file, $head_sha ) = @_;
+
+  return 0
+    if ! defined $head_sha;
+
+  my ( $sha, undef, $syserr ) = run_cmd( qw( git hash-object -- ), $file );
+
+  return 0
+    if $syserr;
+
+  return $sha eq $head_sha;
+
+}
+
 sub get_git_dir {
 
   my ( $git_dir, $err, $syserr ) = run_cmd( qw( git rev-parse --git-dir ) );
@@ -279,14 +352,9 @@ sub get_metadata_from_system {
 
   for my $f ( @files ) {
 
-    # "<mode> <type> <object>\t<path>". The tab is the only field separator,
-    # and everything after it is the path -- which may itself contain a
-    # newline, so it is taken by position rather than matched.
-    my ( $info, $file ) = split /\t/, $f, 2;
+    my ( $sha1, $file ) = split_ls_tree( $f );
 
     next if ! defined $file;
-
-    my $sha1 = ( split / /, $info )[2];
 
     next if exists $ignore{ $file };
 

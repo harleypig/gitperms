@@ -204,6 +204,12 @@ subtest 'outside any repository' => sub {
 
   unlike $result->{ stdout }, qr/Done saving/, 'nothing was saved';
 
+  # $? is not an exit code -- the exit code is its high byte -- so the raw
+  # value reported git's exit 128 as 32768.
+  like $result->{ stderr }, qr/exited 128/, 'git\'s exit status is decoded';
+
+  unlike $result->{ stderr }, qr/\b32768\b/, 'and the raw wait status is not printed';
+
 };
 
 subtest 'from inside the git directory itself' => sub {
@@ -271,8 +277,6 @@ subtest 'from inside the git directory itself' => sub {
     env => { GIT_DIR => undef },
   );
 
-  my $vulnerable = $git_answers_empty && $chdir_empty_succeeds;
-
   SKIP: {
 
     skip 'this git reports a proper error instead of an empty toplevel', 2
@@ -285,25 +289,79 @@ subtest 'from inside the git directory itself' => sub {
 
   }
 
-  TODO: {
+  unlike $result->{ stdout }, qr/Done setting/,
+    'the script does not report success after failing to find a work tree';
 
-    local $TODO = 'chdir $topdir is not guarded by the length check on the line above'
-      if $vulnerable;
+  is sprintf( '%04o', ( stat $decoy )[2] & 07777 ), '0600',
+    'a file in $HOME at a tracked path is left alone';
 
-    unlike $result->{ stdout }, qr/Done setting/,
-      'the script does not report success after failing to find a work tree';
+};
 
-  }
+subtest 'an empty toplevel is refused rather than followed' => sub {
 
-  TODO: {
+  # Issue #19. The host this runs on decides whether the subtest above can
+  # reach the dangerous pairing at all -- current git errors instead of
+  # answering empty, and current perl refuses chdir('') instead of moving to
+  # $HOME -- so the old answer is staged directly here with a git that
+  # replies the way git <= 2.11 did.
+  #
+  # Everything else passes through to the real git, so the run gets a proper
+  # --git-dir and fails only where it is meant to.
 
-    local $TODO = 'an unguarded chdir("") lands in $HOME and restores tracked paths there'
-      if $vulnerable;
+  my ( $real_git ) = GitPerms::Test::Repo::capture( 'sh', '-c', 'command -v git' );
 
-    is sprintf( '%04o', ( stat $decoy )[2] & 07777 ), '0600',
-      'a file in $HOME at a tracked path is left alone';
+  chomp $real_git;
 
-  }
+  plan skip_all => 'cannot locate the real git'
+    if !length $real_git;
+
+  my $repo = fresh_repo();
+
+  run_script( $repo, ['--save'] );
+
+  my $bin = File::Spec->catdir( $repo->{ base }, 'stub' );
+  mkpath( $bin );
+
+  my $stub = File::Spec->catfile( $bin, 'git' );
+
+  open my $fh, '>', $stub or die "create stub: $!";
+  print { $fh } <<"SH";
+#!/bin/sh
+if [ "\$1" = 'rev-parse' ] && [ "\$2" = '--show-toplevel' ]; then
+  echo
+  exit 0
+fi
+exec '$real_git' "\$\@"
+SH
+  close $fh or die "close stub: $!";
+
+  chmod 0755, $stub;
+
+  # The same decoy as above: a file in $HOME at a tracked path, byte for byte
+  # identical to the tracked blob so it is not reported as modified and
+  # skipped by accident. The tracked 'plain' is 0644.
+  my $decoy = File::Spec->catfile( $repo->{ home }, 'plain' );
+
+  open my $decoy_fh, '>', $decoy or die "create decoy: $!";
+  print { $decoy_fh } "content\n";
+  close $decoy_fh or die "close decoy: $!";
+
+  chmod 0600, $decoy;
+
+  my $result = run_script(
+    $repo, ['--set'],
+    env => { PATH => $bin . ':' . ( $ENV{ PATH } || q{} ), GIT_DIR => undef },
+  );
+
+  isnt $result->{ exit }, 0, 'exits non-zero when git answers with an empty toplevel';
+
+  like $result->{ stderr }, qr/top level directory: git reported an empty path/,
+    'and says the toplevel was empty rather than trying to chdir to it';
+
+  unlike $result->{ stdout }, qr/Done setting/, 'nothing was restored';
+
+  is sprintf( '%04o', ( stat $decoy )[2] & 07777 ), '0600',
+    'a file in $HOME at a tracked path is left alone';
 
 };
 

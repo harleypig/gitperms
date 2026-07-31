@@ -5,28 +5,11 @@
 #
 #     t/perlcritic.sh --update
 #
-# Every entry needs a reason. All five below are in handle_metadata and all
-# five are deliberately-deferred bugs, not style disagreements:
-#
-#   ControlStructures::ProhibitMutatingListFunctions
-#       grep { s/^\s\S\s// } @ignore -- the ignore-list parser mutates $_ in a
-#       grep. The same line is the one that misses staged changes, because
-#       /^\s\S\s/ only matches an unstaged status column. Characterised in
-#       t/07-ignore-and-names.t.
-#
-#   InputOutput::ProhibitTwoArgOpen
-#   InputOutput::ProhibitBarewordFileHandles
-#       open RESTORCON, "|restorecon -f- -v" || warn ... -- the SELinux
-#       restore path. || binds tighter than the list operator, so the warn is
-#       the second argument to open rather than an error handler. Deferred to
-#       Phase 2.
+# Every entry needs a reason. Both below are in handle_metadata:
 #
 #   Variables::RequireLocalizedPunctuationVars (x2)
 #       $ENV{GIT_DIR} and $ENV{GIT_WORK_TREE} are set for the process and every
 #       git child it spawns; localising them would defeat the point.
 #
 # END HEADER
-handle_metadata ControlStructures::ProhibitMutatingListFunctions
-handle_metadata InputOutput::ProhibitBarewordFileHandles
-handle_metadata InputOutput::ProhibitTwoArgOpen
 handle_metadata Variables::RequireLocalizedPunctuationVars

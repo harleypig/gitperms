@@ -213,14 +213,15 @@ subtest 'the recorded atime is the moment gitperms ran, not the file\'s atime' =
 
 };
 
-subtest 'drift across the executable bit is NOT restored' => sub {
+subtest 'drift across the executable bit IS restored' => sub {
 
-  # git tracks the executable bit, so losing it makes `git status --porcelain`
-  # report " M <file>". That lands the file on the ignore list, and --set
-  # skips it -- which is exactly the drift gitperms exists to repair.
+  # Issue #21. git tracks the executable bit, so losing it makes
+  # `git status --porcelain` report " M <file>" -- which used to land the file
+  # on the ignore list, so --set skipped precisely the drift gitperms exists
+  # to repair.
   #
-  # Recorded as current behaviour. Whether the ignore list should exclude a
-  # mode-only difference is a design question, not a test bug.
+  # The exemption is narrowed to mode-only differences: a file whose content
+  # still matches HEAD is restored, and one being actively edited is not.
   my $repo = new_repo();
 
   write_file( $repo, 'script', "#!/bin/sh\n" );
@@ -244,8 +245,91 @@ subtest 'drift across the executable bit is NOT restored' => sub {
   my $result = run_script( $repo, ['--set'] );
   is $result->{ exit }, 0, '--set exits 0';
 
-  is sprintf( '%04o', ( stat $path )[2] & 07777 ), '0644',
-    'the executable bit is NOT restored: the file is on the ignore list';
+  is sprintf( '%04o', ( stat $path )[2] & 07777 ), '0755',
+    'the executable bit is restored: a mode-only difference is not ignored';
+
+};
+
+subtest 'a staged mode-only change is restored too' => sub {
+
+  # The same drift, staged rather than left in the worktree: git reports
+  # "M  <file>" and the content still matches HEAD.
+
+  my $repo = new_repo();
+
+  write_file( $repo, 'script', "#!/bin/sh\n" );
+
+  my $path = File::Spec->catfile( $repo->{ root }, 'script' );
+
+  chmod 0755, $path;
+
+  commit_all( $repo, 'initial' );
+
+  run_script( $repo, ['--save'] );
+
+  chmod 0644, $path;
+  git_in( $repo, 'add', 'script' );
+
+  my ( $porcelain ) = git_in( $repo, 'status', '--porcelain', '--untracked-files=no' );
+  like $porcelain, qr/^M  script$/m, 'git reports the staged mode change as "M "';
+
+  my $result = run_script( $repo, ['--set'] );
+  is $result->{ exit }, 0, '--set exits 0';
+
+  is sprintf( '%04o', ( stat $path )[2] & 07777 ), '0755',
+    'a staged mode-only change is restored as well';
+
+};
+
+subtest 'a file whose content changed is still left alone' => sub {
+
+  # The protection the mode-only exemption must not break. Content differing
+  # from HEAD keeps the file on the ignore list however its mode looks, and
+  # in either column: a file mid-edit is never clobbered.
+
+  my $repo = new_repo();
+
+  write_file( $repo, 'worktree', "before\n" );
+  write_file( $repo, 'staged',   "before\n" );
+  write_file( $repo, 'mixed',    "before\n" );
+
+  for my $name ( qw( worktree staged mixed ) ) {
+    chmod 0755, File::Spec->catfile( $repo->{ root }, $name );
+  }
+
+  commit_all( $repo, 'initial' );
+
+  run_script( $repo, ['--save'] );
+
+  my $by_name = by_name( note_hash( $repo ) );
+  is $by_name->{ worktree }{ chmod }, '0755', 'the executable mode was saved';
+
+  # Content edited in the worktree.
+  write_file( $repo, 'worktree', "after\n" );
+  chmod 0644, File::Spec->catfile( $repo->{ root }, 'worktree' );
+
+  # Content edited and staged.
+  write_file( $repo, 'staged', "after\n" );
+  git_in( $repo, 'add', 'staged' );
+  chmod 0644, File::Spec->catfile( $repo->{ root }, 'staged' );
+
+  # Content staged, mode drifted in the worktree afterwards -- one column a
+  # content change, the other a mode change. Content differs, so it is still
+  # work in progress.
+  write_file( $repo, 'mixed', "after\n" );
+  git_in( $repo, 'add', 'mixed' );
+  chmod 0644, File::Spec->catfile( $repo->{ root }, 'mixed' );
+
+  my $result = run_script( $repo, ['--set'] );
+  is $result->{ exit }, 0, '--set exits 0';
+
+  for my $name ( qw( worktree staged mixed ) ) {
+
+    my $mode = ( stat File::Spec->catfile( $repo->{ root }, $name ) )[2] & 07777;
+
+    is sprintf( '%04o', $mode ), '0644', "'$name' was left alone: its content differs from HEAD";
+
+  }
 
 };
 
@@ -355,6 +439,54 @@ subtest 'hardlinked files are classified' => sub {
   is $record->{ nlink }, 2, 'nlink is recorded as 2';
 
   is $record->{ type }, 'HL', 'the pair is classified as HL';
+
+};
+
+subtest 'a link count above one is not on its own a hardlink' => sub {
+
+  # The HL classification used to test `$inode != {}`, which compares the
+  # address of the record against a fresh anonymous hash and is therefore
+  # always true: nlink > 1 alone was enough to be called a hardlink. A file
+  # whose other link is outside the repository -- or simply untracked -- has
+  # one name in the note, so the restore hit its own "No linked files (how did
+  # you get here?!)" guard and skipped the file entirely.
+  #
+  # What the test means is "this record already holds another name for the
+  # same inode", which is the only case the restore can act on.
+
+  my $repo = new_repo();
+
+  write_file( $repo, 'tracked', "shared\n" );
+
+  commit_all( $repo, 'initial' );
+
+  my $path = File::Spec->catfile( $repo->{ root }, 'tracked' );
+
+  # Linked after the commit, so git never sees the second name.
+  link $path, File::Spec->catfile( $repo->{ root }, 'untracked' )
+    or plan skip_all => "hardlinks unsupported: $!";
+
+  chmod 0640, $path;
+
+  run_script( $repo, ['--save'] );
+
+  my $record = by_name( note_hash( $repo ) )->{ tracked };
+
+  is $record->{ nlink }, 2, 'the link count is recorded as 2';
+  is scalar @{ $record->{ name } }, 1, 'only the tracked name is in the note';
+  is $record->{ type }, 'RF', 'one name and no sibling means an ordinary file';
+
+  chmod 0600, $path;
+
+  my $result = run_script( $repo, ['--set'] );
+
+  is $result->{ exit }, 0, '--set exits 0';
+
+  unlike $result->{ stderr }, qr/No linked files/,
+    'the restore does not fall into its hardlink guard';
+
+  is sprintf( '%04o', ( stat $path )[2] & 07777 ), '0640',
+    'and the mode is restored rather than skipped';
 
 };
 

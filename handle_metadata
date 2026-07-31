@@ -23,6 +23,12 @@ use POSIX 'mkfifo';
 
 our $NOTE_NS = 'gitperms';  # What namespace are we using for notes?
 
+# Where the kernel publishes SELinux's enforcing state, most likely first.
+# /selinux was the original mount point; every current distribution puts the
+# selinuxfs under /sys/fs instead, so the old path alone found nothing.
+
+our @SELINUX_ENFORCE = ( '/sys/fs/selinux/enforce', '/selinux/enforce' );
+
 # The ext2 attribute ioctls are FS_IOC_GETFLAGS = _IOR( 'f', 1, long ) and
 # FS_IOC_SETFLAGS = _IOW( 'f', 2, long ). An ioctl number encodes the size of
 # its argument, so both values depend on sizeof(long) -- 0x80086601/0x40086602
@@ -66,13 +72,12 @@ my $topdir  = get_toplevel();
 
 $ENV{ GIT_DIR } = $git_dir;
 
-$ENV{ GIT_WORK_TREE } = $topdir
-  if length $topdir;
+$ENV{ GIT_WORK_TREE } = $topdir;
 
 chdir $topdir
   or die "Unable to change to git top level directory: $!\n";
 
-my $se_enforcing = qx/cat \/selinux\/enforce/;
+my $se_enforcing = selinux_enforcing();
 
 GetOptions(
   'create-on-missing' => \my $create_on_missing,
@@ -109,13 +114,79 @@ die "--save and --set are mutually exclusive\n"
 
 my %metadata;
 
-# Get all files git knows about
-my @files = split /\n/, ( run_cmd( qw( git ls-tree -r -t HEAD ) ) )[0];
+# Get all files git knows about.
+#
+# -z is what makes the path usable: without it git C-quotes any path holding
+# a double quote, a backslash, a control character, or -- under the default
+# core.quotePath -- a byte above 0x7f, and the quoted string is not the name
+# lstat wants. NUL termination removes the quoting instead of asking us to
+# undo it, and it is also the only separator a filename cannot contain: a
+# newline is a legal character in one, so splitting on newlines is unsafe
+# even where nothing is quoted.
 
-# Get unstaged files so we can ignore them
-my @ignore = split /\n/, ( run_cmd( qw( git status --porcelain --untracked-files=no ) ) )[0];
+my @files = split /\0/, ( run_cmd( qw( git ls-tree -r -t -z HEAD ) ) )[0];
 
-my %ignore; @ignore{ grep { s/^\s\S\s// } @ignore } = undef;
+# Get modified files so we can ignore them
+my @ignore = split /\0/, ( run_cmd( qw( git status --porcelain -z --untracked-files=no ) ) )[0];
+
+# The blob HEAD holds for each path. `git status` says a file is modified
+# without saying whether its content or only its mode changed, and no status
+# format separates the two -- so the question is answered by hashing the file
+# on disk and comparing it with this.
+
+my %head_blob;
+
+for my $entry ( @files ) {
+
+  my ( $sha1, $file ) = split_ls_tree( $entry );
+
+  $head_blob{ $file } = $sha1
+    if defined $file;
+
+}
+
+# Each status record is "XY <path>": the staged status in column 1, the
+# worktree status in column 2. A staged-only change is therefore "M  file"
+# and one changed in both is "MM file", neither of which has a space in
+# column 1 -- so matching a shape that required one saw worktree changes
+# alone and let every staged change through.
+#
+# A file whose content is mid-edit is not ours to record or restore. Drift in
+# its *mode* is the opposite: it is the damage gitperms exists to repair, and
+# the executable bit -- the one mode bit git itself reports -- was the case
+# the ignore list used to decline. So a plain modification whose content
+# still matches HEAD stays off the list. Anything else git reports (a
+# deletion, rename, copy, addition, or unmerged path) is work in progress
+# whatever its mode, and so is a modification that changed content in either
+# column.
+#
+# A rename or copy is reported as "XY <to>" followed by a second record
+# holding the path it came from; both names belong to the same work in
+# progress.
+
+my %ignore;
+
+while ( defined( my $entry = shift @ignore ) ) {
+
+  next if length $entry < 4;
+
+  my ( $x, $y ) = ( substr( $entry, 0, 1 ), substr( $entry, 1, 1 ) );
+  my $path = substr $entry, 3;
+
+  my $modification_only = ! grep { $_ ne 'M' && $_ ne q{ } } $x, $y;
+
+  $ignore{ $path } = undef
+    if ! $modification_only || ! content_matches_head( $path, $head_blob{ $path } );
+
+  next
+    if $x ne 'R' && $x ne 'C' && $y ne 'R' && $y ne 'C';
+
+  my $source = shift @ignore;
+
+  $ignore{ $source } = undef
+    if defined $source;
+
+} ## end while ( defined( my ...))
 
 if ( defined $save ) {
 
@@ -203,11 +274,115 @@ sub run_cmd {
 
 } ## end sub run_cmd
 
+# Describe a wait(2) status the way a person reads it. $? is not an exit
+# code: the exit code is its high byte, and its low byte carries the signal
+# that killed the child instead -- so printing it raw reports git's exit 128
+# as 32768. run_cmd answers -1 when the command could not be started at all,
+# and returns the reason as its stderr.
+
+sub describe_status {
+
+  my ( $status ) = @_;
+
+  return 'could not be run'
+    if $status == -1;
+
+  my $signal = $status & 127;
+
+  return sprintf 'was killed by signal %d', $signal
+    if $signal;
+
+  return sprintf 'exited %d', $status >> 8;
+
+}
+
+# Split one `git ls-tree -z` record, "<mode> <type> <object>\t<path>", into
+# its object name and its path. The tab is the only field separator, and
+# everything after it is the path -- which may itself contain a newline, so
+# it is taken by position rather than matched. Returns an empty list for a
+# record with no tab at all.
+
+sub split_ls_tree {
+
+  my ( $entry ) = @_;
+
+  my ( $info, $file ) = split /\t/, $entry, 2;
+
+  return
+    if ! defined $file;
+
+  return ( ( split / /, $info )[2], $file );
+
+}
+
+# Whether the file on disk still holds the content HEAD recorded for it,
+# which is what separates a file whose mode has drifted -- the damage
+# gitperms exists to repair -- from one that is being edited.
+#
+# hash-object applies the same filters git would, so a repository using
+# clean/smudge or end-of-line conversion is compared on the same terms git
+# compares it. Anything that cannot be hashed (a path not in HEAD, an
+# unreadable file, a symlink, whose blob is its target text rather than the
+# content hash-object reads) answers no, which leaves the file ignored.
+
+sub content_matches_head {
+
+  my ( $file, $head_sha ) = @_;
+
+  return 0
+    if ! defined $head_sha;
+
+  my ( $sha, undef, $syserr ) = run_cmd( qw( git hash-object -- ), $file );
+
+  return 0
+    if $syserr;
+
+  return $sha eq $head_sha;
+
+}
+
+# Whether SELinux is enforcing, which is the only reason to restore a file's
+# security context afterwards. The kernel answers with a single character in
+# a pseudo-file, '1' when it is enforcing.
+#
+# This used to be `qx/cat \/selinux\/enforce/`: one path, which no current
+# distribution has, so every run forked a cat that printed a complaint --
+# under --quiet as much as without it -- and the answer was always false. It
+# was not merely reading the wrong file: the value has to be stripped before
+# it is believed, because "0\n" is a true string in perl, so an SELinux
+# system that was *not* enforcing would have been read as one that was.
+#
+# The first path that opens is the answer; a path that is absent (or that
+# cannot be read) simply moves on to the next.
+
+sub selinux_enforcing {
+
+  for my $path ( @SELINUX_ENFORCE ) {
+
+    open my $fh, '<', $path
+      or next;
+
+    my $value = <$fh>;
+
+    close $fh;
+
+    next if ! defined $value;
+
+    chomp $value;
+
+    return $value eq '1';
+
+  }
+
+  return 0;
+
+} ## end sub selinux_enforcing
+
 sub get_git_dir {
 
   my ( $git_dir, $err, $syserr ) = run_cmd( qw( git rev-parse --git-dir ) );
 
-  die "System error: $syserr\n$err\n"
+  die sprintf "System error: git rev-parse --git-dir %s\n%s\n", describe_status( $syserr ), $err
     if $syserr;
 
   die "Unable to get git directory: $err\n"
@@ -226,22 +401,33 @@ sub get_toplevel {
 
   my ( $toplevel, $err, $syserr ) = run_cmd( qw( git rev-parse --show-toplevel ) );
 
-  die "System error: $syserr\n$err\n"
+  die sprintf "System error: git rev-parse --show-toplevel %s\n%s\n", describe_status( $syserr ), $err
     if $syserr;
 
   die "Unable to get top level directory: $err\n"
     if $err;
 
   $toplevel = File::Spec->canonpath( $toplevel );
+
+  # git <= 2.11 answers --show-toplevel from inside .git with an empty string
+  # and exit 0 rather than an error, and perl <= 5.22 reads chdir('') as
+  # chdir() and moves to $HOME -- both inside the range `use 5.014` claims to
+  # support. The pairing left the script applying a snapshot to whatever
+  # tracked paths happened to exist under the home directory.
+  die "Unable to get top level directory: git reported an empty path\n"
+    if ! length $toplevel;
+
   return $toplevel;
 
-}
+} ## end sub get_toplevel
 
 sub get_metadata_from_system {
 
   for my $f ( @files ) {
 
-    my ( $sha1, $file ) = $f =~ /^\d+\s\w+\s([[:xdigit:]]+)\s(.*)$/;
+    my ( $sha1, $file ) = split_ls_tree( $f );
+
+    next if ! defined $file;
 
     next if exists $ignore{ $file };
 
@@ -254,12 +440,26 @@ sub get_metadata_from_system {
       ## no critic qw( ValuesAndExpressions::ProhibitMagicNumbers )
       my $ftype = ( $st->mode & 0170000 ) >> 12;
 
+      # HL means "this record already holds another name for the same inode",
+      # which is the only thing the restore can act on: it relinks every name
+      # after the first back to it. A record with a single name and nlink > 1
+      # -- the file's other links are outside the repository, or untracked --
+      # is an ordinary file as far as we are concerned.
+      #
+      # The test was `$inode != {}`, which compares the address of the record
+      # against that of a fresh anonymous hash and so was always true. Every
+      # such file was typed HL, and the restore then hit its own "how did you
+      # get here?!" guard and skipped the file outright: no mode, no owner, no
+      # timestamps, no attributes.
+
+      my $seen_this_inode = keys %{ $inode };
+
       $inode->{ type }
-        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                 ? 'CF'
-        : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $inode != {} ) ? 'HL'
-        : S_ISDIR( $st->mode )                                         ? 'DIR'
-        : S_ISLNK( $st->mode )                                         ? 'SL'
-        :                                                                'RF';
+        = ( $st->rdev || $ftype == 1 || $ftype == 12 )                     ? 'CF'
+        : ( ! S_ISDIR( $st->mode ) && $st->nlink > 1 && $seen_this_inode ) ? 'HL'
+        : S_ISDIR( $st->mode )                                             ? 'DIR'
+        : S_ISLNK( $st->mode )                                             ? 'SL'
+        :                                                                    'RF';
 
       $inode->{ $_ } = $st->$_ for qw( dev ino mode nlink uid gid rdev size atime mtime ctime blksize blocks );
 
@@ -416,22 +616,37 @@ sub set_note {
 
 sub get_note {
 
-  my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
-  my ( $out, $err ) = run_cmd( @cmd );
+  # Whether a note exists is asked of `git notes list`, which answers with an
+  # exit status: 0 when there is one, 1 when there is not, 128 when the object
+  # itself will not resolve. The missing case used to be recognised by
+  # matching git's own "No note found for object" -- and git lowercased that
+  # sentence somewhere between v1.8.0 and v2.43.0, so the branch stopped being
+  # reachable, --create-on-missing silently did nothing, and the guidance
+  # below was replaced by a raw error. Human-readable output is not an
+  # interface; the exit status is.
 
-  if ( $err ) {
-    if ( $err =~ /No note found for object/ ) {
+  my ( undef, $err, $syserr ) = run_cmd( qw( git notes --ref ), $NOTE_NS, qw( list HEAD ) );
 
-      if ( defined $create_on_missing ) {
+  my $exit = $syserr >> 8;
 
-        get_metadata_from_system();
-        set_note();
-        print "Missing note created.\n";
-        return;
+  if ( $syserr && $exit != 1 ) {
 
-      } else {
+    warn "$err\n\nNot setting metadata ...\n";
+    return;
 
-        print "
+  } elsif ( $exit == 1 ) {
+
+    if ( defined $create_on_missing ) {
+
+      get_metadata_from_system();
+      set_note();
+      print "Missing note created.\n";
+
+      return;
+
+    }
+
+    print "
 
   !!! This commit does not have a note associated with it. !!!
 
@@ -448,25 +663,52 @@ sub get_note {
 
 ";
 
-        return;
+    return;
 
-      } ## end else [ if ( defined $create_on_missing)]
+  } ## end elsif ( $exit == 1 )
 
-    } else {
+  my ( $out, $show_err ) = run_cmd( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
 
-      warn "$err\n\nNot setting metadata ...\n";
-      return;
+  if ( $show_err ) {
 
-    }
+    warn "$show_err\n\nNot setting metadata ...\n";
+    return;
 
-  } else {
-
-    %metadata = %{ JSON::PP->new->utf8->decode( $out ) };
-
-    return 1;
   }
 
+  %metadata = %{ JSON::PP->new->utf8->decode( $out ) };
+
+  names_to_bytes( \%metadata );
+
+  return 1;
+
 } ## end sub get_note
+
+# A path is a string of bytes, and every name in the note arrived as one --
+# git handed it over verbatim and lstat, chmod, and utime all want it back
+# that way. Decoding the note turns those bytes into characters, so a name
+# outside ASCII would otherwise be handed to the filesystem as its UTF-8
+# encoding and match nothing.
+#
+# A name that will not fit in bytes cannot have come from a path here, so it
+# is left as it is rather than made fatal in the middle of a restore.
+
+sub names_to_bytes {
+
+  my ( $metadata ) = @_;
+
+  for my $md ( values %$metadata ) { ## no critic qw( References::ProhibitDoubleSigils )
+
+    for my $inode ( values %$md ) { ## no critic qw( References::ProhibitDoubleSigils )
+
+      utf8::downgrade( $_, 1 ) for @{ $inode->{ name } || [] };
+
+    }
+  }
+
+  return;
+
+}
 
 sub chown_file {
 
@@ -498,7 +740,10 @@ sub chmod_file {
 
     my @files = @{ $chmod_file->{ $chmod } };
 
-    ! defined $quiet && warn sprintf "chmod %04o, @files\n", oct $chmod;
+    # The names are an argument, never part of the format: interpolating them
+    # into it lets a tracked file called '100%n' supply a directive of its own
+    # and abort the run mid-restore.
+    ! defined $quiet && warn sprintf "chmod %04o, %s\n", oct $chmod, "@files";
 
     my $chmodded = chmod oct $chmod, @files;
 
@@ -659,18 +904,34 @@ sub read_flags {
 }
 
 sub restor_ctx {
+
   my ( $restor_ctx ) = @_;
 
-  return if not $se_enforcing;
+  return if ! $se_enforcing;
 
-  my $top = $topdir =~ m/\/$/ ? $topdir : $topdir . "/";
+  my $top = $topdir =~ m{/$} ? $topdir : $topdir . '/';
 
-  open RESTORCON, "|restorecon -f- -v" || warn "unable to execute restorecon";
-  foreach ( @$restor_ctx ) {
-    ! defined $quiet && warn "restorecon " . $top . $_ . "\n";
-    print RESTORCON "" . $top . $_ . "\n";
+  # `open FH, "|cmd" || warn ...` parsed as open( FH, ("|cmd" || warn ...) ):
+  # || binds tighter than the list operator, so the string was simply truthy
+  # and the warning could never fire. `or` binds looser, which is the whole
+  # reason it exists. The list form also keeps the shell out of the command.
+  open my $restorecon, '|-', 'restorecon', '-f-', '-v'
+    or do { warn "Unable to execute restorecon: $!\n"; return };
+
+  for my $file ( @$restor_ctx ) {
+
+    ! defined $quiet && warn "restorecon $top$file\n";
+
+    print { $restorecon } "$top$file\n";
+
   }
-  close RESTORCON;
+
+  # A command on the far end of a pipe is only reaped when the pipe closes, so
+  # this is where its exit status turns up -- open reports nothing but its own
+  # failure to start the thing.
+  close $restorecon
+    or warn sprintf "restorecon %s\n", describe_status( $? );
 
   return;
-}
+
+} ## end sub restor_ctx

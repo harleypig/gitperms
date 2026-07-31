@@ -66,8 +66,7 @@ my $topdir  = get_toplevel();
 
 $ENV{ GIT_DIR } = $git_dir;
 
-$ENV{ GIT_WORK_TREE } = $topdir
-  if length $topdir;
+$ENV{ GIT_WORK_TREE } = $topdir;
 
 chdir $topdir
   or die "Unable to change to git top level directory: $!\n";
@@ -344,6 +343,15 @@ sub get_toplevel {
     if $err;
 
   $toplevel = File::Spec->canonpath( $toplevel );
+
+  # git <= 2.11 answers --show-toplevel from inside .git with an empty string
+  # and exit 0 rather than an error, and perl <= 5.22 reads chdir('') as
+  # chdir() and moves to $HOME -- both inside the range `use 5.014` claims to
+  # support. The pairing left the script applying a snapshot to whatever
+  # tracked paths happened to exist under the home directory.
+  die "Unable to get top level directory: git reported an empty path\n"
+    if ! length $toplevel;
+
   return $toplevel;
 
 }

@@ -124,7 +124,36 @@ my @files = split /\0/, ( run_cmd( qw( git ls-tree -r -t -z HEAD ) ) )[0];
 # Get modified files so we can ignore them
 my @ignore = split /\0/, ( run_cmd( qw( git status --porcelain -z --untracked-files=no ) ) )[0];
 
-my %ignore; @ignore{ grep { s/^\s\S\s// } @ignore } = undef;
+# Each record is "XY <path>": the staged status in column 1, the worktree
+# status in column 2. A staged-only change is therefore "M  file" and one
+# changed in both is "MM file", neither of which has a space in column 1 --
+# so matching a shape that required one saw worktree changes alone and let
+# every staged change through. Whatever git reports in either column, the
+# file is mid-edit and its metadata is not ours to record or restore.
+#
+# A rename or copy is reported as "XY <to>" followed by a second record
+# holding the path it came from; both names belong to the same work in
+# progress.
+
+my %ignore;
+
+while ( defined( my $entry = shift @ignore ) ) {
+
+  next if length $entry < 4;
+
+  my ( $x, $y ) = ( substr( $entry, 0, 1 ), substr( $entry, 1, 1 ) );
+
+  $ignore{ substr $entry, 3 } = undef;
+
+  next
+    if $x ne 'R' && $x ne 'C' && $y ne 'R' && $y ne 'C';
+
+  my $source = shift @ignore;
+
+  $ignore{ $source } = undef
+    if defined $source;
+
+}
 
 if ( defined $save ) {
 

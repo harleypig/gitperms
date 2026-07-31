@@ -77,16 +77,17 @@ subtest 'the ignore list excludes unstaged modifications' => sub {
 
 };
 
-subtest 'the ignore list MISSES staged changes' => sub {
+subtest 'the ignore list excludes staged changes' => sub {
 
   # `git status --porcelain` puts the staged status in column 1 and the
   # unstaged status in column 2, so a staged-only change is "M  file" -- and
-  # the ignore regex /^\s\S\s/ requires a *space* in column 1. Staged changes
-  # therefore never reach the ignore list, and gitperms happily records or
-  # restores metadata for a file whose content is mid-edit.
+  # the old ignore regex /^\s\S\s/ required a *space* in column 1. Staged
+  # changes therefore never reached the ignore list, and gitperms happily
+  # recorded or restored metadata for a file whose content was mid-edit.
 
   my $repo = new_repo();
 
+  write_file( $repo, 'clean',  "clean\n" );
   write_file( $repo, 'staged', "before\n" );
 
   commit_all( $repo, 'initial' );
@@ -101,14 +102,44 @@ subtest 'the ignore list MISSES staged changes' => sub {
 
   my $names = note_names( $repo );
 
-  ok $names->{ staged },
-    'current behaviour: a staged-only change is NOT excluded from the note';
+  ok $names->{ clean },   'the clean file is still recorded';
+  ok !$names->{ staged }, 'a staged change is excluded like an unstaged one';
 
-  TODO: {
-    local $TODO = 'the ignore regex /^\s\S\s/ only matches unstaged changes';
+};
 
-    ok !$names->{ staged }, 'a staged change should be excluded like an unstaged one';
-  }
+subtest 'the ignore list excludes both sides of a rename' => sub {
+
+  # Under -z a rename is two records -- "R  <to>" and then, separately, the
+  # path it came from -- rather than the single "R  <from> -> <to>" line the
+  # newline format uses. Both name the same work in progress.
+  #
+  # The source path is only observably different if it still exists, so it is
+  # recreated here: 'before' is then a path in HEAD, present on disk, holding
+  # the tracked content. Read as a status record instead of as a path, it
+  # would parse as X='b', Y='e', path='ore' -- and 'before' would be recorded
+  # as though nothing were going on.
+
+  my $repo = new_repo();
+
+  write_file( $repo, 'before', "content\n" );
+  write_file( $repo, 'stable', "stable\n" );
+
+  commit_all( $repo, 'initial' );
+
+  git_in( $repo, 'mv', 'before', 'after' );
+  write_file( $repo, 'before', "content\n" );
+
+  my ( $porcelain ) = git_in( $repo, 'status', '--porcelain', '--untracked-files=no' );
+
+  plan skip_all => 'git did not detect the rename'
+    if $porcelain !~ /^R/m;
+
+  run_script( $repo, ['--save'] );
+
+  my $names = note_names( $repo );
+
+  ok $names->{ stable },  'the untouched file is recorded';
+  ok !$names->{ before }, 'the path the rename came from is excluded';
 
 };
 
@@ -140,8 +171,8 @@ subtest 'the ignore list also excludes deletions and both-column changes' => sub
   ok $names->{ keep },     'the clean file is recorded';
   ok !$names->{ deleted }, 'the deleted file is excluded';
 
-  ok $names->{ both },
-    'current behaviour: "MM" is NOT excluded either -- column 1 is not a space';
+  ok !$names->{ both },
+    'a file changed in both columns is excluded too';
 
 };
 

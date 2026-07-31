@@ -498,7 +498,10 @@ sub chmod_file {
 
     my @files = @{ $chmod_file->{ $chmod } };
 
-    ! defined $quiet && warn sprintf "chmod %04o, @files\n", oct $chmod;
+    # The names are an argument, never part of the format: interpolating them
+    # into it lets a tracked file called '100%n' supply a directive of its own
+    # and abort the run mid-restore.
+    ! defined $quiet && warn sprintf "chmod %04o, %s\n", oct $chmod, "@files";
 
     my $chmodded = chmod oct $chmod, @files;
 

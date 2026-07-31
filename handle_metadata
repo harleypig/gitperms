@@ -537,22 +537,37 @@ sub set_note {
 
 sub get_note {
 
-  my @cmd = ( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
-  my ( $out, $err ) = run_cmd( @cmd );
+  # Whether a note exists is asked of `git notes list`, which answers with an
+  # exit status: 0 when there is one, 1 when there is not, 128 when the object
+  # itself will not resolve. The missing case used to be recognised by
+  # matching git's own "No note found for object" -- and git lowercased that
+  # sentence somewhere between v1.8.0 and v2.43.0, so the branch stopped being
+  # reachable, --create-on-missing silently did nothing, and the guidance
+  # below was replaced by a raw error. Human-readable output is not an
+  # interface; the exit status is.
 
-  if ( $err ) {
-    if ( $err =~ /No note found for object/ ) {
+  my ( undef, $err, $syserr ) = run_cmd( qw( git notes --ref ), $NOTE_NS, qw( list HEAD ) );
 
-      if ( defined $create_on_missing ) {
+  my $exit = $syserr >> 8;
 
-        get_metadata_from_system();
-        set_note();
-        print "Missing note created.\n";
-        return;
+  if ( $syserr && $exit != 1 ) {
 
-      } else {
+    warn "$err\n\nNot setting metadata ...\n";
+    return;
 
-        print "
+  } elsif ( $exit == 1 ) {
+
+    if ( defined $create_on_missing ) {
+
+      get_metadata_from_system();
+      set_note();
+      print "Missing note created.\n";
+
+      return;
+
+    }
+
+    print "
 
   !!! This commit does not have a note associated with it. !!!
 
@@ -569,25 +584,24 @@ sub get_note {
 
 ";
 
-        return;
+    return;
 
-      } ## end else [ if ( defined $create_on_missing)]
-
-    } else {
-
-      warn "$err\n\nNot setting metadata ...\n";
-      return;
-
-    }
-
-  } else {
-
-    %metadata = %{ JSON::PP->new->utf8->decode( $out ) };
-
-    names_to_bytes( \%metadata );
-
-    return 1;
   }
+
+  my ( $out, $show_err ) = run_cmd( qw( git notes --ref ), $NOTE_NS, qw( show HEAD ) );
+
+  if ( $show_err ) {
+
+    warn "$show_err\n\nNot setting metadata ...\n";
+    return;
+
+  }
+
+  %metadata = %{ JSON::PP->new->utf8->decode( $out ) };
+
+  names_to_bytes( \%metadata );
+
+  return 1;
 
 } ## end sub get_note
 

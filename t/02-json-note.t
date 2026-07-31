@@ -246,22 +246,15 @@ SKIP: {
     ok !$result, 'get_note reports failure when there is no note';
     is_deeply $pkg->can( 't_get_metadata' )->(), {}, 'no metadata is invented';
 
-    # Characterises issue #13. git lowercased its message to "no note found
-    # for object", so get_note's /No note found for object/ never matches and
-    # the missing-note branch is unreachable: the generic error path runs
-    # instead. These two assertions record what happens today; Phase 2 flips
-    # them when the match is fixed.
-    like $warned, qr/no note found for object/i,
-      '[#13] the missing-note case currently falls through to the generic error branch';
-    is $printed, q{},
-      '[#13] ...so the guidance text is never printed';
-
-    TODO: {
-      local $TODO = 'issue #13: get_note matches /No note found/ but git says "no note found"';
-
-      like $printed, qr/does not have a note associated with it/,
-        'the missing-note guidance should be printed';
-    }
+    # Issue #13. The missing case used to be recognised by matching git's own
+    # "No note found for object", and git lowercased that sentence between
+    # v1.8.0 and v2.43.0 -- so the branch became unreachable and the generic
+    # error path ran instead. Existence is now asked of `git notes list`,
+    # which answers with an exit status.
+    like $printed, qr/does not have a note associated with it/,
+      '[#13] the missing-note guidance is printed';
+    is $warned, q{},
+      '[#13] ...and no raw git error reaches the user';
 
   };
 
@@ -277,12 +270,13 @@ SKIP: {
 
     $pkg->can( 't_set_create_on_missing' )->( undef );
 
-    TODO: {
-      local $TODO = 'issue #13: --create-on-missing is unreachable for the same reason';
+    like $printed, qr/Missing note created/, '--create-on-missing creates the note';
+    ok defined note_for_head( $repo ), '...and a note now exists on HEAD';
 
-      like $printed, qr/Missing note created/, '--create-on-missing creates the note';
-      ok defined note_for_head( $repo ), '...and a note now exists on HEAD';
-    }
+    unlike $printed, qr/does not have a note associated with it/,
+      '...instead of printing the guidance';
+
+    ok !$result, 'the note is created rather than applied on this run';
 
   };
 
